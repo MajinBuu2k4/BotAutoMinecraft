@@ -1,0 +1,21 @@
+{
+  "name": "bot-minecraft",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "body-parser": "^2.2.0",
+    "chalk": "^5.4.1",
+    "express": "^5.1.0",
+    "mineflayer": "^4.27.0",
+    "mineflayer-gui": "^4.0.2",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-web-inventory": "^1.8.5"
+  }
+}
