@@ -125,4 +125,4 @@ python Watchdog_GUI.py
 - Không đóng cửa sổ PowerShell đang chạy bot
 - Nên để ứng dụng chạy ẩnh thay vì đóng hoàn toàn
 - Kiểm tra tài nguyên hệ thống khi chạy nhiều bot
-- Đặt tên bot theo định dạng "VanguardXX" (XX là số từ 01-30) 
+- Đặt tên bot theo định dạng "VanguardXX" 
