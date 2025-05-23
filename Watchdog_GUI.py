@@ -18,6 +18,17 @@ import logging
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
 
+# Màu sắc cho logs
+LOG_COLORS = {
+    "success": "#4CAF50",  # Xanh lá đậm
+    "error": "#FF5252",    # Đỏ tươi
+    "warning": "#FFA726",  # Cam
+    "info": "#90CAF9",     # Xanh dương nhạt
+    "normal": "#E0E0E0",   # Xám sáng
+    "time": "#B39DDB",     # Tím nhạt
+    "bot": "#81C784"       # Xanh lá nhạt
+}
+
 BOT_DIR = r"C:\Users\Administrator\Desktop\BotAutoMinecraft"
 BOTS_DIR = os.path.join(BOT_DIR, "bots")
 SHORTCUT_DIR = os.path.join(BOT_DIR, "shortcut")
@@ -25,6 +36,8 @@ LOG_FILE = os.path.join(BOT_DIR, "watchdog", "watchdog-output.log")
 PROGRESS_LOG_FILE = os.path.join(BOT_DIR, "watchdog", "watchdog-progress-output.log")
 PS_SCRIPT = os.path.join(BOT_DIR, "watchdog", "watchdog.ps1")
 PROGRESS_PS_SCRIPT = os.path.join(BOT_DIR, "watchdog", "watchdog_progress.ps1")
+WATCHDOG_SHORTCUT = os.path.join(BOT_DIR, "watchdog", "watchdog_service.lnk")
+PROGRESS_SHORTCUT = os.path.join(BOT_DIR, "watchdog", "watchdog_progress_service.lnk")
 ICON_PATH = os.path.join(BOT_DIR, "icon.ico")
 ERROR_LOG = os.path.join(BOT_DIR, "gui_error.log")
 
@@ -59,6 +72,9 @@ class BotManager(ctk.CTk):
         self.iconbitmap(ICON_PATH)
         self.geometry("1000x650")
         self.minsize(800, 500)
+        
+        # Căn giữa cửa sổ
+        self.center_window()
 
         self.bots = [f"Vanguard{i:02}" for i in range(1, 31)]
         self.widgets = []
@@ -82,11 +98,27 @@ class BotManager(ctk.CTk):
         self.draw_bots()
         self.start_update_threads()
         self.refresh_log()
+        
+        # Cập nhật logs thường xuyên
+        self.after(1000, self.continuous_log_refresh)  # Cập nhật log mỗi 1 giây
         self.after(10000, self.auto_refresh_progress)  # Kiểm tra progress mỗi 10s
         self.after(120000, self.auto_refresh_watchdog)  # Kiểm tra log mỗi 2 phút
 
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.create_tray_icon()
+
+    def center_window(self):
+        """Căn giữa cửa sổ trên màn hình"""
+        self.update_idletasks()  # Cập nhật kích thước thực của cửa sổ
+        width = self.winfo_width()
+        height = self.winfo_height()
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
     def setup_gui(self):
         self.main_frame = ctk.CTkFrame(self)
@@ -112,8 +144,25 @@ class BotManager(ctk.CTk):
         self.left_frame = ctk.CTkFrame(self.log_frame)
         self.left_frame.pack(side="left", fill="both", expand=True, padx=(0,5))
         
-        ctk.CTkLabel(self.left_frame, text="Watchdog Log", font=("Segoe UI", 12, "bold")).pack(pady=5)
-        self.watchdog_log = ctk.CTkTextbox(self.left_frame, wrap="word", height=200)
+        # Thêm header đẹp hơn cho watchdog log
+        header_frame = ctk.CTkFrame(self.left_frame, fg_color="#2D3436")
+        header_frame.pack(fill="x", pady=(0, 5))
+        ctk.CTkLabel(
+            header_frame,
+            text="🔍 Watchdog Log",
+            font=("Segoe UI", 14, "bold"),
+            text_color="#E0E0E0"
+        ).pack(pady=5)
+        
+        # Cấu hình watchdog log
+        self.watchdog_log = ctk.CTkTextbox(
+            self.left_frame,
+            wrap="word",
+            height=200,
+            font=("Consolas", 12),
+            fg_color="#1E1E1E",
+            text_color="#E0E0E0"
+        )
         self.watchdog_log.pack(fill="both", expand=True)
         self.watchdog_log.configure(state="disabled")
         
@@ -121,8 +170,25 @@ class BotManager(ctk.CTk):
         self.right_frame = ctk.CTkFrame(self.log_frame)
         self.right_frame.pack(side="right", fill="both", expand=True, padx=(5,0))
         
-        ctk.CTkLabel(self.right_frame, text="Progress Log", font=("Segoe UI", 12, "bold")).pack(pady=5)
-        self.progress_log = ctk.CTkTextbox(self.right_frame, wrap="word", height=200)
+        # Thêm header đẹp hơn cho progress log
+        header_frame = ctk.CTkFrame(self.right_frame, fg_color="#2D3436")
+        header_frame.pack(fill="x", pady=(0, 5))
+        ctk.CTkLabel(
+            header_frame,
+            text="📊 Progress Log",
+            font=("Segoe UI", 14, "bold"),
+            text_color="#E0E0E0"
+        ).pack(pady=5)
+        
+        # Cấu hình progress log
+        self.progress_log = ctk.CTkTextbox(
+            self.right_frame,
+            wrap="word",
+            height=200,
+            font=("Consolas", 12),
+            fg_color="#1E1E1E",
+            text_color="#E0E0E0"
+        )
         self.progress_log.pack(fill="both", expand=True)
         self.progress_log.configure(state="disabled")
 
@@ -470,9 +536,11 @@ class BotManager(ctk.CTk):
             try:
                 if os.path.exists(LOG_FILE):
                     os.remove(LOG_FILE)
-                subprocess.run(
-                    ["powershell.exe", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", PS_SCRIPT],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                # Sử dụng shortcut thay vì chạy trực tiếp
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", WATCHDOG_SHORTCUT],
+                    shell=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
             except Exception as e:
                 self.after(0, lambda: self.append_to_log(f"Lỗi: {e}", is_error=True))
@@ -486,46 +554,75 @@ class BotManager(ctk.CTk):
         self.refresh_log()
         self.refresh_progress_log()
 
+    def continuous_log_refresh(self):
+        """Liên tục cập nhật nội dung của cả hai log"""
+        if not self.is_checking_paused:
+            self.refresh_log()
+            self.refresh_progress_log()
+        self.after(1000, self.continuous_log_refresh)  # Lập lịch cho lần cập nhật tiếp theo
+
     def refresh_log(self):
         """Đọc và cập nhật watchdog log"""
         def load_log():
-            log_content = []
             if os.path.exists(LOG_FILE):
                 try:
                     with open(LOG_FILE, "r", encoding="utf-8") as f:
-                        log_content = f.readlines()
-                except Exception:
-                    log_content = ["Lỗi đọc log file.\n"]
-            else:
-                log_content = ["Không tìm thấy log file.\n"]
-            return log_content
+                        return f.readlines()
+                except Exception as e:
+                    logging.error(f"Error reading watchdog log: {str(e)}")
+                    return [f"Lỗi đọc watchdog log file: {str(e)}\n"]
+            return []
 
         def update_log_display(content):
             self.watchdog_log.configure(state="normal")
-            self.watchdog_log.delete("1.0", "end")
+            current_content = self.watchdog_log.get("1.0", "end-1c")
+            new_content = "".join(content)
             
-            for line in content:
-                tag = "green" if "OK" in line else "red" if "Error" in line or "Exception" in line else "white"
-                self.watchdog_log.insert("end", line, tag)
+            # Chỉ cập nhật nếu nội dung thay đổi
+            if current_content != new_content:
+                self.watchdog_log.delete("1.0", "end")
+                for line in content:
+                    # Tách timestamp và nội dung
+                    parts = line.split("]", 1) if "]" in line else ["", line]
+                    if len(parts) == 2:
+                        timestamp = parts[0] + "]"
+                        message = parts[1]
+                        
+                        # Thêm timestamp với màu riêng
+                        self.watchdog_log.insert("end", timestamp, "time")
+                        
+                        # Xác định tag cho phần nội dung
+                        if "OK" in message:
+                            tag = "success"
+                        elif "Error" in message or "Exception" in message:
+                            tag = "error"
+                        elif "khởi động" in message:
+                            tag = "warning"
+                        else:
+                            tag = "normal"
+                        
+                        # Thêm nội dung với màu tương ứng
+                        self.watchdog_log.insert("end", message, tag)
+                    else:
+                        self.watchdog_log.insert("end", line, "normal")
+                
+                # Cấu hình màu cho các tag
+                self.watchdog_log.tag_config("time", foreground=LOG_COLORS["time"])
+                self.watchdog_log.tag_config("success", foreground=LOG_COLORS["success"])
+                self.watchdog_log.tag_config("error", foreground=LOG_COLORS["error"])
+                self.watchdog_log.tag_config("warning", foreground=LOG_COLORS["warning"])
+                self.watchdog_log.tag_config("normal", foreground=LOG_COLORS["normal"])
+                
+                # Cuộn xuống cuối
+                self.watchdog_log.see("end")
             
-            self.watchdog_log.tag_config("green", foreground="#a6e3a1")
-            self.watchdog_log.tag_config("red", foreground="#f38ba8")
-            self.watchdog_log.tag_config("white", foreground="#cdd6f4")
             self.watchdog_log.configure(state="disabled")
 
-        future = self.executor.submit(load_log)
-        
-        def check_result():
-            if future.done():
-                try:
-                    content = future.result()
-                    update_log_display(content)
-                except Exception:
-                    update_log_display(["Lỗi tải log.\n"])
-            else:
-                self.after(100, check_result)
-        
-        self.after(100, check_result)
+        try:
+            content = load_log()
+            self.after(0, lambda: update_log_display(content))
+        except Exception as e:
+            logging.error(f"Error in refresh_log: {str(e)}")
 
     def append_to_log(self, text, is_error=False):
         """Thêm text vào cả 2 log box"""
@@ -579,9 +676,11 @@ class BotManager(ctk.CTk):
                 try:
                     if os.path.exists(PROGRESS_LOG_FILE):
                         os.remove(PROGRESS_LOG_FILE)
-                    subprocess.run(
-                        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", PROGRESS_PS_SCRIPT],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    # Sử dụng shortcut thay vì chạy trực tiếp
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "", PROGRESS_SHORTCUT],
+                        shell=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW
                     )
                 except Exception as e:
                     self.after(0, lambda: self.append_to_log(f"Lỗi kiểm tra progress: {e}", is_error=True))
@@ -592,7 +691,7 @@ class BotManager(ctk.CTk):
         self.after(10000, self.auto_refresh_progress)
 
     def refresh_progress_log(self):
-        """Đọc và cập nhật progress log với xử lý màu tốt hơn"""
+        """Đọc và cập nhật progress log"""
         def load_log():
             if os.path.exists(PROGRESS_LOG_FILE):
                 try:
@@ -605,25 +704,48 @@ class BotManager(ctk.CTk):
 
         def update_progress_display(content):
             self.progress_log.configure(state="normal")
-            self.progress_log.delete("1.0", "end")
+            current_content = self.progress_log.get("1.0", "end-1c")
+            new_content = "".join(content)
             
-            for line in content:
-                if "✅" in line:
-                    tag = "success"
-                elif "❌" in line:
-                    tag = "error"
-                elif "🛠" in line:
-                    tag = "warning"
-                else:
-                    tag = "info"
+            # Chỉ cập nhật nếu nội dung thay đổi
+            if current_content != new_content:
+                self.progress_log.delete("1.0", "end")
+                for line in content:
+                    # Tách phần bot name và trạng thái
+                    if "[" in line and "]" in line:
+                        bot_start = line.find("[")
+                        bot_end = line.find("]", bot_start) + 1
+                        bot_name = line[bot_start:bot_end]
+                        rest_of_line = line[bot_end:]
+                        
+                        # Thêm tên bot với màu riêng
+                        self.progress_log.insert("end", bot_name, "bot")
+                        
+                        # Xác định tag cho phần trạng thái
+                        if "✅" in rest_of_line:
+                            tag = "success"
+                        elif "❌" in rest_of_line:
+                            tag = "error"
+                        elif "🛠" in rest_of_line:
+                            tag = "warning"
+                        else:
+                            tag = "info"
+                        
+                        # Thêm phần còn lại với màu tương ứng
+                        self.progress_log.insert("end", rest_of_line, tag)
+                    else:
+                        self.progress_log.insert("end", line, "normal")
                 
-                self.progress_log.insert("end", line, tag)
-            
-            # Cấu hình màu cho các trạng thái
-            self.progress_log.tag_config("success", foreground="#a6e3a1")
-            self.progress_log.tag_config("error", foreground="#f38ba8")
-            self.progress_log.tag_config("warning", foreground="#FFA726")
-            self.progress_log.tag_config("info", foreground="#cdd6f4")
+                # Cấu hình màu cho các tag
+                self.progress_log.tag_config("bot", foreground=LOG_COLORS["bot"])
+                self.progress_log.tag_config("success", foreground=LOG_COLORS["success"])
+                self.progress_log.tag_config("error", foreground=LOG_COLORS["error"])
+                self.progress_log.tag_config("warning", foreground=LOG_COLORS["warning"])
+                self.progress_log.tag_config("info", foreground=LOG_COLORS["info"])
+                self.progress_log.tag_config("normal", foreground=LOG_COLORS["normal"])
+                
+                # Cuộn xuống cuối
+                self.progress_log.see("end")
             
             self.progress_log.configure(state="disabled")
 
@@ -641,20 +763,11 @@ class BotManager(ctk.CTk):
                             widget["status_var"].set("Offline")
                             widget["status_label"].configure(text_color=STATUS_COLORS["offline"])
 
-        future = self.executor.submit(load_log)
-        
-        def check_result():
-            if future.done():
-                try:
-                    content = future.result()
-                    update_progress_display(content)
-                except Exception as e:
-                    logging.error(f"Error updating progress display: {str(e)}")
-                    self.append_to_log(f"Lỗi cập nhật progress: {str(e)}", is_error=True)
-            else:
-                self.after(100, check_result)
-        
-        self.after(100, check_result)
+        try:
+            content = load_log()
+            self.after(0, lambda: update_progress_display(content))
+        except Exception as e:
+            logging.error(f"Error in refresh_progress_log: {str(e)}")
 
     def pause_checking(self):
         """Tạm dừng/tiếp tục kiểm tra"""
