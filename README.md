@@ -42,7 +42,7 @@ pip install pillow
 BotAutoMinecraft/
 ├── bots/                  # Thư mục chứa script của các bot
 │   └── logs/             # Log của từng bot
-├── node/                  # Thư mục chứa các file thực thi của bot
+├── node/                 # Thư mục chứa các file thực thi của bot
 ├── watchdog/             # Script giám sát và log của watchdog
 ├── shortcut/             # Shortcut để khởi động bot
 ├── Watchdog_GUI.py       # Giao diện quản lý chính

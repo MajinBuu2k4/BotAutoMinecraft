@@ -22,4 +22,4 @@ for (let i = 1; i <= 30; i++) {
     console.log(`Đã tạo: ${destFileName}`);
 }
 
-console.log('Hoàn tất sao chép 30 file Vanguard.');
+console.log('Hoàn tất sao chép 30 file Vanguard');
