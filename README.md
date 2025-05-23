@@ -36,17 +36,39 @@ pip install pystray
 pip install pillow
 ```
 
-### 3. Cấu trúc thư mục
+### 3. Tạo các file thực thi Node.js cho bot
+
+1. Chạy script `createVanguards.js` để tạo các file thực thi cho bot:
+```bash
+node createVanguards.js
+```
+
+Script này sẽ:
+- Tạo thư mục `node` nếu chưa tồn tại
+- Tạo 30 bản sao của node.exe với tên `VanguardXX.exe` (XX từ 01-30)
+- Các file thực thi này sẽ được sử dụng để chạy các bot độc lập
+
+Lưu ý: 
+- Đảm bảo đường dẫn Node.js trong `createVanguards.js` chính xác
+- Mặc định là `C:\\Program Files\\nodejs\\node.exe`
+- Thư mục đích mặc định là `C:\\Users\\Administrator\\Desktop\\node`
+- Điều chỉnh các đường dẫn này nếu cần thiết
+
+### 4. Cấu trúc thư mục
 
 ```
 BotAutoMinecraft/
 ├── bots/                  # Thư mục chứa script của các bot
 │   └── logs/             # Log của từng bot
-├── node/                 # Thư mục chứa các file thực thi của bot
+├── node/                  # Thư mục chứa các file thực thi của bot
+│   ├── Vanguard01.exe    # File thực thi cho bot 1
+│   ├── Vanguard02.exe    # File thực thi cho bot 2
+│   └── ...               # Các file thực thi khác
 ├── watchdog/             # Script giám sát và log của watchdog
 ├── shortcut/             # Shortcut để khởi động bot
 ├── Watchdog_GUI.py       # Giao diện quản lý chính
 ├── Watchdog_GUI.ahk      # Script AutoHotkey
+├── createVanguards.js    # Script tạo file thực thi cho bot
 └── icon.ico              # Icon của ứng dụng
 ```
 
@@ -105,12 +127,19 @@ python Watchdog_GUI.py
    - Kiểm tra đường dẫn trong file cấu hình
    - Xem log lỗi trong `gui_error.log`
    - Đảm bảo Node.js đang chạy đúng phiên bản
+   - Kiểm tra các file thực thi trong thư mục `node` đã được tạo đúng
 
-2. **Watchdog không hoạt động**
+2. **Lỗi khi tạo file thực thi**
+   - Chạy Command Prompt hoặc PowerShell với quyền Administrator
+   - Kiểm tra đường dẫn Node.js trong `createVanguards.js`
+   - Đảm bảo có quyền ghi vào thư mục đích
+   - Kiểm tra Node.js đã được cài đặt đúng cách
+
+3. **Watchdog không hoạt động**
    - Kiểm tra quyền thực thi PowerShell
    - Xem log trong thư mục `watchdog`
 
-3. **Giao diện không hiển thị đúng**
+4. **Giao diện không hiển thị đúng**
    - Cập nhật CustomTkinter lên phiên bản mới nhất
    - Kiểm tra file `icon.ico` tồn tại
 
