@@ -49,8 +49,6 @@ foreach ($bot in $botList) {
         $formattedTime = Format-TimeSpan -timeSpan $timeSpan
         Write-Log "✅ [$name] OK ($formattedTime trước)"
     } else {
-        Write-Log "❌ [$name] chưa có process → cần chạy"
-        Write-Log "🛠 [$name] chưa chạy → khởi động"
-        Start-Process -FilePath $exe -ArgumentList $script -WindowStyle Minimized
+        Write-Log "❌ [$name] offline"
     }
 }
