@@ -13,6 +13,7 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 import queue
 import logging
+import json
 
 # ==== Cài đặt ====
 ctk.set_appearance_mode("dark")
@@ -25,10 +26,11 @@ LOG_FILE = os.path.join(BOT_DIR, "watchdog", "watchdog-output.log")
 PROGRESS_LOG_FILE = os.path.join(BOT_DIR, "watchdog", "watchdog-progress-output.log")
 PS_SCRIPT = os.path.join(BOT_DIR, "watchdog", "watchdog.ps1")
 PROGRESS_PS_SCRIPT = os.path.join(BOT_DIR, "watchdog", "watchdog_progress.ps1")
-WATCHDOG_SHORTCUT = os.path.join(BOT_DIR, "watchdog", "watchdog_service.lnk")
-PROGRESS_SHORTCUT = os.path.join(BOT_DIR, "watchdog", "watchdog_progress_service.lnk")
 ICON_PATH = os.path.join(BOT_DIR, "icon.ico")
 ERROR_LOG = os.path.join(BOT_DIR, "gui_error.log")
+SERVICE_DIR = os.path.join(BOT_DIR, "service")
+RUNTIME_DATA_FILE = os.path.join(SERVICE_DIR, "runtime_data.json")
+CONFIG_FILE = os.path.join(BOT_DIR, "window_config.json")  # File lưu cấu hình cửa sổ
 
 # Màu sắc cho logs
 LOG_COLORS = {
@@ -38,6 +40,15 @@ LOG_COLORS = {
     "info": "#90CAF9",     # Xanh dương nhạt
     "title": "#E0E0E0",    # Xám sáng cho tiêu đề
     "background": "#2B2B2B" # Nền tối
+}
+
+# Màu sắc cho trạng thái
+STATUS_COLORS = {
+    "online": "#43A047",    # Xanh lá
+    "offline": "#E53935",   # Đỏ
+    "starting": "#FFA726",  # Cam
+    "text_online": "white", # Màu chữ cho online
+    "text_offline": "white" # Màu chữ cho offline
 }
 
 # Thêm logging cho errors
@@ -58,26 +69,378 @@ TOOLTIPS = {
     "close_all": "Đóng tất cả bot"
 }
 
-STATUS_COLORS = {
-    "online": "#43A047",
-    "offline": "#E53935",
-    "starting": "#FFA726"
-}
+class WindowConfig:
+    def __init__(self):
+        self.config = self.load_config()
+    
+    def load_config(self):
+        """Đọc cấu hình từ file"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logging.error(f"Error loading window config: {str(e)}")
+            return {}
+    
+    def save_config(self):
+        """Lưu cấu hình vào file"""
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            logging.error(f"Error saving window config: {str(e)}")
+    
+    def save_window_state(self, window_name, geometry):
+        """Lưu trạng thái của cửa sổ"""
+        self.config[window_name] = geometry
+        self.save_config()
+    
+    def get_window_state(self, window_name, default=None):
+        """Lấy trạng thái của cửa sổ"""
+        return self.config.get(window_name, default)
+
+# Tạo đối tượng quản lý cấu hình toàn cục
+window_config = WindowConfig()
+
+class RuntimeStatsWindow(ctk.CTkToplevel):
+    def __init__(self, parent, runtime_data):
+        super().__init__(parent)
+        self.title("⏱ Thời gian chạy")
+        
+        # Khôi phục vị trí và kích thước từ cấu hình
+        saved_geometry = window_config.get_window_state("runtime_stats")
+        if saved_geometry:
+            self.geometry(saved_geometry)
+        else:
+            # Cấu hình mặc định nếu chưa có
+            self.geometry("600x800")
+            # Căn giữa cửa sổ so với cửa sổ chính
+            self.center_window(parent)
+        
+        # Đặt cửa sổ luôn hiển thị trên cửa sổ chính nhưng cho phép tương tác với cửa sổ chính
+        self.transient(parent)  # Giữ lại để cửa sổ luôn ở trên cửa sổ chính
+        # Bỏ grab_set() để cho phép tương tác với cửa sổ chính
+        
+        # Frame chứa danh sách
+        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Header
+        headers = ["Bot", "Thời gian chạy"]
+        for i, header in enumerate(headers):
+            label = ctk.CTkLabel(
+                self.scroll_frame, 
+                text=header,
+                font=("Segoe UI", 14, "bold")
+            )
+            label.grid(row=0, column=i, padx=10, pady=5, sticky="w")
+        
+        # Sắp xếp bot theo thời gian chạy giảm dần
+        sorted_bots = sorted(runtime_data.items(), key=lambda x: x[1], reverse=True)
+        
+        # Hiển thị thông tin từng bot
+        for i, (bot, runtime) in enumerate(sorted_bots, start=1):
+            # Tên bot
+            bot_label = ctk.CTkLabel(
+                self.scroll_frame,
+                text=bot,
+                font=("Segoe UI", 12)
+            )
+            bot_label.grid(row=i, column=0, padx=10, pady=5, sticky="w")
+            
+            # Thời gian chạy
+            time_label = ctk.CTkLabel(
+                self.scroll_frame,
+                text=self.format_runtime(runtime),
+                font=("Segoe UI", 12)
+            )
+            time_label.grid(row=i, column=1, padx=10, pady=5, sticky="w")
+            
+            # Thêm màu nền xen kẽ cho dễ đọc
+            if i % 2 == 0:
+                bot_label.configure(fg_color=("gray85", "gray20"))
+                time_label.configure(fg_color=("gray85", "gray20"))
+        
+        # Bind các sự kiện
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Configure>", self.on_window_configure)
+        
+        # Focus vào cửa sổ này
+        self.focus_force()
+    
+    def center_window(self, parent):
+        """Căn giữa cửa sổ so với cửa sổ chính"""
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        width = 600
+        height = 800
+        x = parent_x + (parent_width - width) // 2
+        y = parent_y + (parent_height - height) // 2
+        
+        # Đảm bảo cửa sổ không vượt quá màn hình
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        x = max(0, min(x, screen_width - width))
+        y = max(0, min(y, screen_height - height))
+        
+        self.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def on_window_configure(self, event=None):
+        """Xử lý sự kiện khi cửa sổ thay đổi kích thước hoặc vị trí"""
+        if event is not None and event.widget == self:
+            # Đợi một chút để tránh lưu quá nhiều
+            if hasattr(self, '_save_timer'):
+                self.after_cancel(self._save_timer)
+            self._save_timer = self.after(500, self.save_window_state)
+    
+    def save_window_state(self):
+        """Lưu trạng thái cửa sổ"""
+        window_config.save_window_state("runtime_stats", self.geometry())
+
+    def format_runtime(self, seconds):
+        """Định dạng thời gian chạy"""
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        parts = []
+        if days > 0:
+            parts.append(f"{days} ngày")
+        if hours > 0 or days > 0:
+            parts.append(f"{hours} giờ")
+        if minutes > 0 or hours > 0 or days > 0:
+            parts.append(f"{minutes} phút")
+        parts.append(f"{secs} giây")
+        
+        return " ".join(parts)
+
+class LogWindow(ctk.CTkToplevel):
+    def __init__(self, parent, title, log_file, log_type="watchdog"):
+        super().__init__(parent)
+        self.title(title)
+        self.log_file = log_file
+        self.log_type = log_type
+        
+        # Thiết lập màu cho thanh title
+        if self.log_type == "watchdog":
+            title_color = "#9C27B0"  # Màu tím cho Watchdog Log
+        else:
+            title_color = "#009688"  # Màu xanh lá cho Progress Log
+        
+        # Thay đổi màu thanh title (Windows only)
+        if sys.platform.startswith('win'):
+            self.after(10, lambda: self.set_title_bar_color(title_color))
+        
+        # Khôi phục vị trí và kích thước từ cấu hình
+        saved_geometry = window_config.get_window_state(f"log_{log_type}")
+        if saved_geometry:
+            self.geometry(saved_geometry)
+        else:
+            # Cấu hình mặc định nếu chưa có
+            self.geometry("800x600")
+            # Căn giữa cửa sổ so với cửa sổ chính
+            self.center_window(parent)
+        
+        # Đặt cửa sổ luôn hiển thị trên cửa sổ chính nhưng cho phép tương tác với cửa sổ chính
+        self.transient(parent)  # Giữ lại để cửa sổ log luôn ở trên cửa sổ chính
+        # Bỏ grab_set() để cho phép tương tác với cửa sổ chính
+        
+        # Tạo textbox cho log
+        self.log_text = ctk.CTkTextbox(
+            self,
+            wrap="word",
+            font=("Consolas", 12),
+            fg_color=LOG_COLORS["background"],
+            text_color=LOG_COLORS["info"]
+        )
+        self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Thêm nút đóng
+        self.button_frame = ctk.CTkFrame(self)
+        self.button_frame.pack(side="bottom", fill="x", padx=10, pady=10)
+        
+        refresh_button = ctk.CTkButton(
+            self.button_frame,
+            text="🔄 Làm mới",
+            command=self.refresh_log,
+            width=100,
+            fg_color=title_color,  # Sử dụng cùng màu với thanh title
+            hover_color=self.adjust_color_brightness(title_color, -20)  # Tối hơn một chút khi hover
+        )
+        refresh_button.pack(side="left", padx=5)
+        
+        close_button = ctk.CTkButton(
+            self.button_frame,
+            text="Đóng",
+            command=self.destroy,
+            width=100
+        )
+        close_button.pack(side="right", padx=5)
+        
+        # Bind các sự kiện
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Configure>", self.on_window_configure)
+        
+        # Focus vào cửa sổ này
+        self.focus_force()
+        
+        # Cập nhật log ban đầu
+        self.refresh_log()
+        
+        # Tự động cập nhật log mỗi giây
+        self.after(1000, self.auto_refresh)
+    
+    def set_title_bar_color(self, color):
+        """Thay đổi màu thanh title (Windows only)"""
+        try:
+            import ctypes
+            from ctypes import windll, byref, sizeof, c_int
+            
+            DWMWA_CAPTION_COLOR = 35
+            
+            # Chuyển đổi màu hex sang RGB
+            color = color.lstrip('#')
+            rgb = tuple(int(color[i:i+2], 16) for i in (0, 2, 4))
+            # Chuyển RGB thành BGRA (Windows yêu cầu định dạng này)
+            bgra = rgb[2] | (rgb[1] << 8) | (rgb[0] << 16) | (0xFF << 24)
+            
+            hwnd = windll.user32.GetParent(self.winfo_id())
+            value = c_int(bgra)
+            windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR,
+                byref(value),
+                sizeof(value)
+            )
+        except Exception as e:
+            logging.error(f"Error setting title bar color: {str(e)}")
+    
+    def adjust_color_brightness(self, color, factor):
+        """Điều chỉnh độ sáng của màu"""
+        # Chuyển hex sang RGB
+        color = color.lstrip('#')
+        rgb = tuple(int(color[i:i+2], 16) for i in (0, 2, 4))
+        
+        # Điều chỉnh độ sáng
+        new_rgb = tuple(max(0, min(255, c + factor)) for c in rgb)
+        
+        # Chuyển lại thành hex
+        return '#{:02x}{:02x}{:02x}'.format(*new_rgb)
+
+    def center_window(self, parent):
+        """Căn giữa cửa sổ so với cửa sổ chính"""
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        width = 800
+        height = 600
+        x = parent_x + (parent_width - width) // 2
+        y = parent_y + (parent_height - height) // 2
+        
+        # Đảm bảo cửa sổ không vượt quá màn hình
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        
+        x = max(0, min(x, screen_width - width))
+        y = max(0, min(y, screen_height - height))
+        
+        self.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def on_window_configure(self, event=None):
+        """Xử lý sự kiện khi cửa sổ thay đổi kích thước hoặc vị trí"""
+        if event is not None and event.widget == self:
+            # Đợi một chút để tránh lưu quá nhiều
+            if hasattr(self, '_save_timer'):
+                self.after_cancel(self._save_timer)
+            self._save_timer = self.after(500, self.save_window_state)
+    
+    def save_window_state(self):
+        """Lưu trạng thái cửa sổ"""
+        window_config.save_window_state(f"log_{self.log_type}", self.geometry())
+
+    def auto_refresh(self):
+        """Tự động cập nhật log nếu cửa sổ còn mở"""
+        if self.winfo_exists():
+            self.refresh_log()
+            self.after(1000, self.auto_refresh)
+    
+    def refresh_log(self):
+        """Cập nhật nội dung log"""
+        try:
+            if os.path.exists(self.log_file):
+                with open(self.log_file, "r", encoding="utf-8") as f:
+                    content = f.readlines()
+                
+                # Lưu vị trí cuộn hiện tại
+                current_scroll = self.log_text.yview()[0]
+                
+                self.log_text.configure(state="normal")
+                self.log_text.delete("1.0", "end")
+                
+                for line in content:
+                    if self.log_type == "watchdog":
+                        if "OK" in line:
+                            self.log_text.insert("end", line, "success")
+                        elif "Error" in line or "Exception" in line:
+                            self.log_text.insert("end", line, "error")
+                        elif "restart" in line.lower():
+                            self.log_text.insert("end", line, "warning")
+                        else:
+                            self.log_text.insert("end", line, "info")
+                    else:  # progress log
+                        if "✅" in line:
+                            self.log_text.insert("end", line, "success")
+                        elif "❌" in line:
+                            self.log_text.insert("end", line, "error")
+                        elif "🛠" in line or "🔄" in line:
+                            self.log_text.insert("end", line, "warning")
+                        else:
+                            self.log_text.insert("end", line, "info")
+                
+                # Cấu hình màu cho các tag
+                self.log_text.tag_config("success", foreground=LOG_COLORS["success"])
+                self.log_text.tag_config("error", foreground=LOG_COLORS["error"])
+                self.log_text.tag_config("warning", foreground=LOG_COLORS["warning"])
+                self.log_text.tag_config("info", foreground=LOG_COLORS["info"])
+                
+                # Giữ nguyên vị trí cuộn nếu không ở cuối
+                if current_scroll > 0.9:
+                    self.log_text.see("end")
+                else:
+                    self.log_text.yview_moveto(current_scroll)
+                
+                self.log_text.configure(state="disabled")
+                
+        except Exception as e:
+            logging.error(f"Error refreshing log: {str(e)}")
 
 class BotManager(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("BotAutoMinecraft Manager")
         self.iconbitmap(ICON_PATH)
-        self.geometry("1000x650")
-        self.minsize(800, 500)
-
-        # Căn giữa cửa sổ
+        
+        # Khôi phục vị trí và kích thước từ cấu hình
+        saved_geometry = window_config.get_window_state("main_window")
+        if saved_geometry:
+            self.geometry(saved_geometry)
+        else:
+            self.geometry("1000x650")
         self.center_window()
+        
+        self.minsize(800, 500)
 
         self.bots = [f"Vanguard{i:02}" for i in range(1, 31)]
         self.widgets = []
-        self.bot_start_times = {}
         self.process_cache = {}  # Cache cho processes
         self.cache_timestamp = 0
         self.cache_duration = 2  # Cache 2 giây
@@ -93,18 +456,33 @@ class BotManager(ctk.CTk):
         self.is_updating = False
         self.update_counter = 0
         
+        # Biến lưu trữ cửa sổ log
+        self.watchdog_window = None
+        self.progress_window = None
+        
+        # Đường dẫn đến icon đỏ
+        self.red_icon_path = os.path.join(BOT_DIR, "icons", "shiba_do.ico")
+        
+        # Khởi tạo runtime data
+        self.runtime_data = self.load_runtime_data()
+        
         self.setup_gui()
         self.draw_bots()
         self.start_update_threads()
-        self.refresh_log()
         
-        # Cập nhật logs thường xuyên
-        self.after(1000, self.continuous_log_refresh)  # Cập nhật log mỗi 1 giây
-        self.after(10000, self.auto_refresh_progress)  # Kiểm tra progress mỗi 10s
-        self.after(120000, self.auto_refresh_watchdog)  # Kiểm tra log mỗi 2 phút
+        # Cập nhật logs và runtime
+        self.after(1000, self.update_runtime_display)  # Cập nhật hiển thị runtime mỗi giây
+        self.after(1000, self.check_service_status)  # Kiểm tra trạng thái service
+
+        # Kích hoạt ngay lập tức các chức năng kiểm tra khi khởi động
+        self.run_watchdog()  # Chạy watchdog ngay lập tức
+        self.auto_refresh_progress()  # Bắt đầu kiểm tra progress
+        self.auto_refresh_watchdog()  # Bắt đầu kiểm tra watchdog
 
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.create_tray_icon()
+        
+        self.bind("<Configure>", self.on_window_configure)
 
     def center_window(self):
         """Căn giữa cửa sổ trên màn hình"""
@@ -126,81 +504,75 @@ class BotManager(ctk.CTk):
         self.scroll_frame = ctk.CTkScrollableFrame(self.main_frame)
         self.scroll_frame.pack(fill="both", expand=True)
 
-        for i in range(8):
-            self.scroll_frame.grid_columnconfigure(i, weight=1)
+        # Cấu hình chiều rộng cột
+        column_widths = {
+            0: (1, 100),  # Bot Name
+            1: (1, 80),   # Inventory
+            2: (0, 100),  # Status - cố định
+            3: (1, 60),   # Focus
+            4: (1, 60),   # Run
+            5: (1, 60),   # Close
+            6: (1, 60),   # Edit
+            7: (0, 350)   # Resource - cố định
+        }
+        
+        for col, (weight, minsize) in column_widths.items():
+            self.scroll_frame.grid_columnconfigure(col, weight=weight, minsize=minsize)
 
         headers = ["Bot Name", "Inventory", "Status", "Focus", "Run", "Close", "Edit", "Resource"]
         for i, header in enumerate(headers):
-            ctk.CTkLabel(self.scroll_frame, text=header, font=("Segoe UI", 14, "bold")).grid(
-                row=0, column=i, padx=10, pady=10, sticky="ew"
-            )
+            if i in [2, 7]:  # Status và Resource có chiều rộng cố định
+                ctk.CTkLabel(
+                    self.scroll_frame,
+                    text=header,
+                    font=("Segoe UI", 14, "bold"),
+                    width=column_widths[i][1]  # Sử dụng chiều rộng từ cấu hình
+                ).grid(row=0, column=i, padx=10, pady=10, sticky="w")
+            else:
+                ctk.CTkLabel(
+                    self.scroll_frame,
+                    text=header,
+                    font=("Segoe UI", 14, "bold")
+                ).grid(row=0, column=i, padx=10, pady=10, sticky="ew")
 
-        # Frame chứa 2 cột log
-        self.log_frame = ctk.CTkFrame(self)
-        self.log_frame.pack(fill="both", expand=False, padx=10, pady=10)
-        
-        # Cột bên trái cho watchdog log
-        self.left_frame = ctk.CTkFrame(self.log_frame)
-        self.left_frame.pack(side="left", fill="both", expand=True, padx=(0,5))
-        
-        # Tạo header đẹp hơn cho watchdog log
-        header_frame = ctk.CTkFrame(self.left_frame, fg_color=LOG_COLORS["background"])
-        header_frame.pack(fill="x", pady=(0, 5))
-        
-        ctk.CTkLabel(
-            header_frame,
-            text="🔍 Watchdog Log",
-            font=("Segoe UI", 14, "bold"),
-            text_color=LOG_COLORS["title"]
-        ).pack(pady=5)
-        
-        # Tạo textbox với màu nền tối
-        self.watchdog_log = ctk.CTkTextbox(
-            self.left_frame,
-            wrap="word",
-            height=200,
-            font=("Consolas", 12),
-            fg_color=LOG_COLORS["background"],
-            text_color=LOG_COLORS["info"]
-        )
-        self.watchdog_log.pack(fill="both", expand=True)
-        
-        # Cột bên phải cho progress log
-        self.right_frame = ctk.CTkFrame(self.log_frame)
-        self.right_frame.pack(side="right", fill="both", expand=True, padx=(5,0))
-        
-        # Tạo header đẹp hơn cho progress log
-        header_frame = ctk.CTkFrame(self.right_frame, fg_color=LOG_COLORS["background"])
-        header_frame.pack(fill="x", pady=(0, 5))
-        
-        ctk.CTkLabel(
-            header_frame,
-            text="📊 Progress Log",
-            font=("Segoe UI", 14, "bold"),
-            text_color=LOG_COLORS["title"]
-        ).pack(pady=5)
-        
-        # Tạo textbox với màu nền tối
-        self.progress_log = ctk.CTkTextbox(
-            self.right_frame,
-            wrap="word",
-            height=200,
-            font=("Consolas", 12),
-            fg_color=LOG_COLORS["background"],
-            text_color=LOG_COLORS["info"]
-        )
-        self.progress_log.pack(fill="both", expand=True)
-
+        # Frame chứa các nút điều khiển
         self.btn_frame = ctk.CTkFrame(self)
         self.btn_frame.pack(pady=5)
 
         self.run_btn = ctk.CTkButton(self.btn_frame, text="▶ Chạy Watchdog", command=self.run_watchdog)
         self.run_btn.pack(side="left", padx=10)
 
-        self.refresh_btn = ctk.CTkButton(self.btn_frame, text="🔄 Làm mới log", command=self.refresh_all_logs)
-        self.refresh_btn.pack(side="left", padx=10)
+        # Nút mở cửa sổ Watchdog Log
+        self.watchdog_log_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="📋 Watchdog Log",
+            command=self.show_watchdog_log,
+            fg_color="#9C27B0",
+            hover_color="#7B1FA2"
+        )
+        self.watchdog_log_btn.pack(side="left", padx=10)
 
-        # Thêm nút tạm dừng kiểm tra
+        # Nút mở cửa sổ Progress Log
+        self.progress_log_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="📊 Progress Log",
+            command=self.show_progress_log,
+            fg_color="#009688",
+            hover_color="#00796B"
+        )
+        self.progress_log_btn.pack(side="left", padx=10)
+
+        # Nút hiển thị thời gian chạy
+        self.runtime_btn = ctk.CTkButton(
+            self.btn_frame, 
+            text="⏱ Thời gian chạy", 
+            command=self.show_runtime_stats,
+            fg_color="#2196F3",
+            hover_color="#1976D2"
+        )
+        self.runtime_btn.pack(side="left", padx=10)
+
+        # Nút tạm dừng kiểm tra
         self.pause_btn = ctk.CTkButton(
             self.btn_frame, 
             text="⏸ Tạm dừng kiểm tra", 
@@ -211,7 +583,15 @@ class BotManager(ctk.CTk):
         self.pause_btn.pack(side="left", padx=10)
         self.bind_tooltip(self.pause_btn, TOOLTIPS["pause"])
 
-        # Thêm nút đóng tất cả bot
+        # Label hiển thị trạng thái service
+        self.service_status_label = ctk.CTkLabel(
+            self.btn_frame,
+            text="🔄 Đang kiểm tra service...",
+            font=("Segoe UI", 12)
+        )
+        self.service_status_label.pack(side="left", padx=10)
+
+        # Nút đóng tất cả bot
         self.close_all_btn = ctk.CTkButton(
             self.btn_frame, 
             text="✖ Đóng tất cả", 
@@ -219,7 +599,7 @@ class BotManager(ctk.CTk):
             fg_color="#E53935",
             hover_color="#C62828"
         )
-        self.close_all_btn.pack(side="left", padx=10)
+        self.close_all_btn.pack(side="right", padx=10)
         self.bind_tooltip(self.close_all_btn, TOOLTIPS["close_all"])
 
     def draw_bots(self):
@@ -227,11 +607,28 @@ class BotManager(ctk.CTk):
             port = 3000 + i + 1
             row = i + 1
 
-            status_var = ctk.StringVar()
+            status_var = ctk.StringVar(value="Offline")  # Giá trị mặc định
             resource_var = ctk.StringVar()
 
-            status_label = ctk.CTkLabel(self.scroll_frame, textvariable=status_var, font=("Segoe UI", 12, "bold"))
-            resource_label = ctk.CTkLabel(self.scroll_frame, textvariable=resource_var, font=("Segoe UI", 12))
+            # Status label với chiều rộng cố định và background color
+            status_label = ctk.CTkLabel(
+                self.scroll_frame,
+                textvariable=status_var,
+                font=("Segoe UI", 12, "bold"),
+                width=100,
+                anchor="center",
+                fg_color=STATUS_COLORS["offline"],  # Background color mặc định
+                text_color=STATUS_COLORS["text_offline"],  # Màu chữ mặc định
+                corner_radius=6  # Bo góc cho đẹp
+            )
+
+            resource_label = ctk.CTkLabel(
+                self.scroll_frame,
+                textvariable=resource_var,
+                font=("Segoe UI", 12),
+                width=350,
+                anchor="w"
+            )
 
             # Thêm tooltips cho các nút
             inv_btn = self.create_button(self.scroll_frame, f"{port}", 60, 
@@ -258,12 +655,12 @@ class BotManager(ctk.CTk):
 
             ctk.CTkLabel(self.scroll_frame, text=bot).grid(row=row, column=0, padx=5, pady=4, sticky="ew")
             inv_btn.grid(row=row, column=1, padx=5, sticky="ew")
-            status_label.grid(row=row, column=2, padx=5, sticky="ew")
+            status_label.grid(row=row, column=2, padx=5, pady=4, sticky="ew")  # Sử dụng sticky="ew" để căn giữa
             focus_btn.grid(row=row, column=3, padx=5, sticky="ew")
             run_btn.grid(row=row, column=4, padx=5, sticky="ew")
             close_btn.grid(row=row, column=5, padx=5, sticky="ew")
             edit_btn.grid(row=row, column=6, padx=5, sticky="ew")
-            resource_label.grid(row=row, column=7, padx=5, sticky="ew")
+            resource_label.grid(row=row, column=7, padx=5, pady=4, sticky="w")
 
             self.widgets.append({
                 "name": bot,
@@ -385,9 +782,15 @@ class BotManager(ctk.CTk):
                     self.is_updating = True
                     updates = []
                     
+                    # Đọc runtime data mới nhất từ service
+                    self.runtime_data = self.load_runtime_data()
+                    
                     for bot in self.widgets:
                         name = bot["name"]
                         info = self.get_process_info(name)
+                        
+                        # Lấy thời gian chạy từ service
+                        info['total_runtime'] = self.runtime_data.get(name, 0)
                         updates.append((bot, info))
                     
                     # Đưa updates vào queue để main thread xử lý
@@ -409,34 +812,40 @@ class BotManager(ctk.CTk):
                     name = bot_widget["name"]
                     
                     if info['online']:
-                        create_time = info['create_time']
-                        
-                        if name not in self.bot_start_times:
-                            self.bot_start_times[name] = create_time
-                        
                         runtime_str = self.format_runtime(info['runtime'])
                         
+                        # Cập nhật status và màu sắc
                         bot_widget["status_var"].set("Online")
-                        bot_widget["status_label"].configure(text_color="#43A047")
+                        bot_widget["status_label"].configure(
+                            fg_color=STATUS_COLORS["online"],
+                            text_color=STATUS_COLORS["text_online"]
+                        )
                         bot_widget["run_btn"].configure(fg_color="#66BB6A", hover_color="#558B2F")
+                        
+                        # Cập nhật thông tin tài nguyên
                         bot_widget["resource_var"].set(
                             f"CPU: {info['cpu']:.1f}% | RAM: {info['memory']:.1f}MB | Runtime: {runtime_str}"
                         )
                     else:
-                        if name in self.bot_start_times:
-                            del self.bot_start_times[name]
+                        total_runtime_str = self.format_total_runtime(info['total_runtime'])
                         
+                        # Cập nhật status và màu sắc
                         bot_widget["status_var"].set("Offline")
-                        bot_widget["status_label"].configure(text_color="#E53935")
+                        bot_widget["status_label"].configure(
+                            fg_color=STATUS_COLORS["offline"],
+                            text_color=STATUS_COLORS["text_offline"]
+                        )
                         bot_widget["run_btn"].configure(fg_color="#FFCA28", hover_color="#FDD835")
-                        bot_widget["resource_var"].set("CPU: 0.0% | RAM: 0.0MB | Runtime: --")
+                        
+                        # Cập nhật thông tin tài nguyên
+                        bot_widget["resource_var"].set(f"CPU: 0.0% | RAM: 0.0MB | Runtime: --")
                 
                 self.update_counter += 1
                 
         except queue.Empty:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Error in process_updates_from_queue: {str(e)}")
         
         # Lên lịch cho lần kiểm tra tiếp theo
         self.after(500, self.process_updates_from_queue)
@@ -503,14 +912,40 @@ class BotManager(ctk.CTk):
 
     def focus_bot(self, bot_name):
         try:
+            # Focus vào cửa sổ bot
             windows = gw.getWindowsWithTitle(bot_name)
+            bot_window = None
             for win in windows:
                 if bot_name in win.title:
+                    bot_window = win
                     time.sleep(0.1)
                     win.restore()
+                    win.moveTo(0, 0)  # Di chuyển bot về vị trí 0,0
                     win.activate()
-                    return
-            self.after(0, lambda: self.popup_message(f"Không tìm thấy cửa sổ {bot_name}", "#FFA500"))
+                    break
+            
+            if not bot_window:
+                self.after(0, lambda: self.popup_message(f"Không tìm thấy cửa sổ {bot_name}", "#FFA500"))
+                return
+
+            # Lấy kích thước cửa sổ bot
+            bot_width = bot_window.width
+            
+            # Mở tool send_command
+            send_command_process = subprocess.Popen(
+                [sys.executable, os.path.join("tool_quan_ly", "send_command.py"), bot_name],
+                creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+            )
+            
+            # Đợi một chút để cửa sổ send_command xuất hiện
+            time.sleep(1)
+            
+            # Tìm và di chuyển cửa sổ send_command
+            send_command_windows = gw.getWindowsWithTitle("Gửi Lệnh Cho Bot")
+            for win in send_command_windows:
+                win.moveTo(bot_width, 0)  # Di chuyển sang phải của cửa sổ bot
+                break
+
         except Exception as e:
             self.after(0, lambda: self.popup_message(f"Lỗi: {str(e)}", "red"))
 
@@ -535,12 +970,23 @@ class BotManager(ctk.CTk):
             try:
                 if os.path.exists(LOG_FILE):
                     os.remove(LOG_FILE)
-                # Sử dụng shortcut thay vì chạy trực tiếp
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", WATCHDOG_SHORTCUT],
-                    shell=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
+                
+                # Chạy PowerShell script ẩn
+                if sys.platform == "win32":
+                    # Cách chạy cho Windows
+                    subprocess.Popen(
+                        ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", PS_SCRIPT],
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                else:
+                    # Cách chạy cho các hệ điều hành khác
+                    subprocess.Popen(
+                        ["powershell", "-File", PS_SCRIPT],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
             except Exception as e:
                 self.after(0, lambda: self.append_to_log(f"Lỗi: {e}", is_error=True))
             finally:
@@ -548,136 +994,234 @@ class BotManager(ctk.CTk):
 
         self.executor.submit(task)
 
-    def refresh_all_logs(self):
-        """Làm mới cả 2 loại log"""
-        self.refresh_log()
-        self.refresh_progress_log()
+    def show_watchdog_log(self):
+        """Hiển thị cửa sổ Watchdog Log"""
+        if self.watchdog_window is None or not self.watchdog_window.winfo_exists():
+            self.watchdog_window = LogWindow(
+                self,
+                "📋 Watchdog Log",
+                LOG_FILE,
+                "watchdog"
+            )
+        else:
+            self.watchdog_window.focus()
 
-    def continuous_log_refresh(self):
-        """Liên tục cập nhật nội dung của cả hai log"""
-        if not self.is_checking_paused:
-            self.refresh_log()
-            self.refresh_progress_log()
-        self.after(1000, self.continuous_log_refresh)  # Lập lịch cho lần cập nhật tiếp theo
+    def show_progress_log(self):
+        """Hiển thị cửa sổ Progress Log"""
+        if self.progress_window is None or not self.progress_window.winfo_exists():
+            self.progress_window = LogWindow(
+                self,
+                "📊 Progress Log",
+                PROGRESS_LOG_FILE,
+                "progress"
+            )
+        else:
+            self.progress_window.focus()
 
-    def refresh_log(self):
-        """Đọc và cập nhật watchdog log"""
-        def load_log():
-            if os.path.exists(LOG_FILE):
-                try:
-                    with open(LOG_FILE, "r", encoding="utf-8") as f:
-                        return f.readlines()
-                except Exception as e:
-                    logging.error(f"Error reading watchdog log: {str(e)}")
-                    return [f"Lỗi đọc watchdog log file: {str(e)}\n"]
-            return []
+    def show_runtime_stats(self):
+        """Hiển thị cửa sổ thống kê thời gian chạy"""
+        runtime_data = self.load_runtime_data()
+        stats_window = RuntimeStatsWindow(self, runtime_data)
+        stats_window.focus()
 
-        def update_log_display(content):
-            self.watchdog_log.configure(state="normal")
-            current_content = self.watchdog_log.get("1.0", "end-1c")
-            new_content = "".join(content)
-            
-            # Chỉ cập nhật và cuộn xuống nếu có nội dung mới
-            if current_content != new_content:
-                # Lưu vị trí cuộn hiện tại
-                current_scroll = self.watchdog_log.yview()[0]
-                
-                self.watchdog_log.delete("1.0", "end")
-                for line in content:
-                    if "OK" in line:
-                        self.watchdog_log.insert("end", line, "success")
-                    elif "Error" in line or "Exception" in line:
-                        self.watchdog_log.insert("end", line, "error")
-                    elif "restart" in line.lower():
-                        self.watchdog_log.insert("end", line, "warning")
-                    else:
-                        self.watchdog_log.insert("end", line, "info")
-                
-                # Cấu hình màu cho các tag
-                self.watchdog_log.tag_config("success", foreground=LOG_COLORS["success"])
-                self.watchdog_log.tag_config("error", foreground=LOG_COLORS["error"])
-                self.watchdog_log.tag_config("warning", foreground=LOG_COLORS["warning"])
-                self.watchdog_log.tag_config("info", foreground=LOG_COLORS["info"])
-                
-                # Chỉ cuộn xuống dưới nếu trước đó đang ở cuối
-                if current_scroll > 0.9:  # Nếu đang ở gần cuối (90% trở lên)
-                    self.watchdog_log.see("end")
-                else:  # Giữ nguyên vị trí cuộn
-                    self.watchdog_log.yview_moveto(current_scroll)
-            
-            self.watchdog_log.configure(state="disabled")
-
-        try:
-            content = load_log()
-            self.after(0, lambda: update_log_display(content))
-        except Exception as e:
-            logging.error(f"Error in refresh_log: {str(e)}")
-
-    def append_to_log(self, text, is_error=False):
-        """Thêm text vào cả 2 log box"""
-        tag = "red" if is_error else "green"
-        
-        self.watchdog_log.configure(state="normal")
-        self.watchdog_log.insert("end", text + "\n", tag)
-        self.watchdog_log.configure(state="disabled")
-        
-        self.progress_log.configure(state="normal")
-        self.progress_log.insert("end", text + "\n", tag)
-        self.progress_log.configure(state="disabled")
-
-    def auto_refresh_watchdog(self):
-        """Tự động chạy watchdog.ps1 mỗi 2 phút"""
-        if not self.is_checking_paused:
-            self.run_watchdog()
-        self.after(120000, self.auto_refresh_watchdog)
+    def on_window_configure(self, event=None):
+        """Xử lý sự kiện khi cửa sổ thay đổi kích thước hoặc vị trí"""
+        if event is not None and event.widget == self:
+            # Đợi một chút để tránh lưu quá nhiều
+            if hasattr(self, '_save_timer'):
+                self.after_cancel(self._save_timer)
+            self._save_timer = self.after(500, self.save_window_state)
+    
+    def save_window_state(self):
+        """Lưu trạng thái cửa sổ"""
+        window_config.save_window_state("main_window", self.geometry())
 
     def hide_to_tray(self):
         self.withdraw()
 
     def create_tray_icon(self):
+        """Tạo icon trong system tray với menu và xử lý double click"""
         if os.path.exists(ICON_PATH):
-            image = Image.open(ICON_PATH)
+            self.normal_icon = Image.open(ICON_PATH)
         else:
-            image = Image.new("RGB", (64, 64), color="green")
-            draw = ImageDraw.Draw(image)
+            self.normal_icon = Image.new("RGB", (64, 64), color="green")
+            draw = ImageDraw.Draw(self.normal_icon)
             draw.rectangle((0, 0, 64, 64), fill="green")
             draw.text((10, 20), "Bot", fill="white")
 
-        self.tray_icon = pystray.Icon("BotManager", image, "BotAutoMinecraft", menu=pystray.Menu(
-            pystray.MenuItem("Mở giao diện", lambda: self.show_window()),
-            pystray.MenuItem("Thoát", lambda: self.quit_app())
-        ))
+        if os.path.exists(self.red_icon_path):
+            self.paused_icon = Image.open(self.red_icon_path)
+        else:
+            self.paused_icon = Image.new("RGB", (64, 64), color="red")
+            draw = ImageDraw.Draw(self.paused_icon)
+            draw.rectangle((0, 0, 64, 64), fill="red")
+            draw.text((10, 20), "Bot", fill="white")
+
+        self.tray_icon = pystray.Icon(
+            "BotManager",
+            self.normal_icon,
+            "BotAutoMinecraft",
+            menu=self.create_tray_menu()
+        )
+        
+        # Xử lý double click
+        self.tray_icon.on_activate = self.show_window
 
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def create_tray_menu(self):
+        """Tạo menu cho system tray icon"""
+        return pystray.Menu(
+            pystray.MenuItem(
+                "Mở giao diện",
+                self.show_window,
+                default=True  # Làm cho mục này là default action (single click)
+            ),
+            pystray.MenuItem(
+                "Tiếp tục kiểm tra" if self.is_checking_paused else "Tạm dừng kiểm tra",
+                self.toggle_pause_from_tray
+            ),
+            pystray.MenuItem(
+                "Thoát",
+                self.quit_app
+            )
+        )
+
+    def toggle_pause_from_tray(self):
+        """Xử lý tạm dừng/tiếp tục từ system tray"""
+        self.pause_checking()  # Sử dụng lại logic đã có
+
+    def pause_checking(self):
+        """Tạm dừng/tiếp tục kiểm tra từ nút trong GUI"""
+        self.is_checking_paused = not self.is_checking_paused
+        
+        if self.is_checking_paused:
+            self.pause_btn.configure(
+                text="▶ Tiếp tục kiểm tra",
+                fg_color="#43A047",
+                hover_color="#2E7D32"
+            )
+            self.tray_icon.icon = self.paused_icon
+        else:
+            self.pause_btn.configure(
+                text="⏸ Tạm dừng kiểm tra",
+                fg_color="#FFA726",
+                hover_color="#FB8C00"
+            )
+            self.tray_icon.icon = self.normal_icon
+            # Kích hoạt kiểm tra ngay lập tức
+            self.refresh_all_logs()
+        
+        # Cập nhật menu với text mới
+        self.tray_icon.menu = self.create_tray_menu()
+        
+        # Cập nhật lại icon để menu được refresh
+        self.tray_icon.update_menu()
+        
+        self.append_to_log("Đã tạm dừng kiểm tra" if self.is_checking_paused else "Đã tiếp tục kiểm tra")
+
+    def close_all_bots(self):
+        """Đóng tất cả bot"""
+        def task():
+            try:
+                # Kích hoạt tạm dừng kiểm tra trước
+                if not self.is_checking_paused:
+                    self.after(0, self.pause_checking)
+                
+                # Sau đó đóng tất cả bot
+                for bot in self.bots:
+                    self.close_bot(bot)
+                    time.sleep(0.1)  # Tránh quá tải hệ thống
+                self.after(0, lambda: self.append_to_log("Đã đóng tất cả bot"))
+            except Exception as e:
+                self.after(0, lambda: self.append_to_log(f"Lỗi đóng tất cả bot: {str(e)}", is_error=True))
+
+        self.executor.submit(task)
+
+    def load_runtime_data(self):
+        """Đọc dữ liệu thời gian chạy từ file"""
+        try:
+            if os.path.exists(RUNTIME_DATA_FILE):
+                with open(RUNTIME_DATA_FILE, 'r') as f:
+                    return json.load(f)
+            return {bot: 0 for bot in self.bots}
+        except Exception as e:
+            logging.error(f"Error loading runtime data: {str(e)}")
+            return {bot: 0 for bot in self.bots}
+
+    def update_runtime_display(self):
+        """Cập nhật hiển thị thời gian chạy"""
+        # Cập nhật hiển thị cho mỗi bot
+        for widget in self.widgets:
+            bot_name = widget["name"]
+            
+            # Lấy thông tin CPU/RAM từ process cache
+            process_name = f"{bot_name.lower()}.exe"
+            if process_name in self.process_cache:
+                try:
+                    proc = self.process_cache[process_name]
+                    if proc.is_running():
+                        cpu = proc.cpu_percent()
+                        mem = proc.memory_info().rss / (1024 * 1024)
+                        current_runtime = time.time() - proc.create_time()
+                        runtime_str = self.format_runtime(current_runtime)
+                        widget["resource_var"].set(
+                            f"CPU: {cpu:.1f}% | RAM: {mem:.1f}MB | Runtime: {runtime_str}"
+                        )
+                    else:
+                        widget["resource_var"].set("Offline")
+                except Exception:
+                    widget["resource_var"].set("Offline")
+            else:
+                widget["resource_var"].set("Offline")
+        
+        # Lên lịch cập nhật tiếp theo
+        self.after(1000, self.update_runtime_display)
 
     def show_window(self):
         self.after(0, self.deiconify)
 
     def quit_app(self):
-        self.executor.shutdown(wait=False)
+        """Thoát ứng dụng"""
+        # Xóa icon khỏi system tray ngay lập tức
+        self.tray_icon.visible = False
         self.tray_icon.stop()
-        self.destroy()
+        
+        # Đóng executor và destroy window
+        self.executor.shutdown(wait=False)
+        self.quit()
 
     def auto_refresh_progress(self):
-        """Tự động chạy watchdog_progress.ps1 mỗi 10 giây"""
+        """Tự động chạy watchdog_progress.ps1 mỗi 10 giây để kiểm tra trạng thái"""
         if not self.is_checking_paused:
             def task():
                 try:
                     if os.path.exists(PROGRESS_LOG_FILE):
                         os.remove(PROGRESS_LOG_FILE)
-                    # Sử dụng shortcut thay vì chạy trực tiếp
-                    subprocess.Popen(
-                        ["cmd", "/c", "start", "", PROGRESS_SHORTCUT],
-                        shell=True,
-                        creationflags=subprocess.CREATE_NO_WINDOW
-                    )
+                    
+                    # Chạy PowerShell script ẩn
+                    if sys.platform == "win32":
+                        # Cách chạy cho Windows
+                        subprocess.Popen(
+                            ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", PROGRESS_PS_SCRIPT],
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
+                    else:
+                        # Cách chạy cho các hệ điều hành khác
+                        subprocess.Popen(
+                            ["powershell", "-File", PROGRESS_PS_SCRIPT],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                        )
                 except Exception as e:
                     self.after(0, lambda: self.append_to_log(f"Lỗi kiểm tra progress: {e}", is_error=True))
                 finally:
                     self.after(0, self.refresh_progress_log)
 
             self.executor.submit(task)
-        self.after(10000, self.auto_refresh_progress)
+        self.after(10000, self.auto_refresh_progress)  # Chạy lại sau 10 giây
 
     def refresh_progress_log(self):
         """Đọc và cập nhật progress log"""
@@ -692,39 +1236,39 @@ class BotManager(ctk.CTk):
             return []
 
         def update_progress_display(content):
-            self.progress_log.configure(state="normal")
-            current_content = self.progress_log.get("1.0", "end-1c")
+            self.progress_window.log_text.configure(state="normal")
+            current_content = self.progress_window.log_text.get("1.0", "end-1c")
             new_content = "".join(content)
             
             # Chỉ cập nhật và cuộn xuống nếu có nội dung mới
             if current_content != new_content:
                 # Lưu vị trí cuộn hiện tại
-                current_scroll = self.progress_log.yview()[0]
+                current_scroll = self.progress_window.log_text.yview()[0]
                 
-                self.progress_log.delete("1.0", "end")
+                self.progress_window.log_text.delete("1.0", "end")
                 for line in content:
                     if "✅" in line:
-                        self.progress_log.insert("end", line, "success")
+                        self.progress_window.log_text.insert("end", line, "success")
                     elif "❌" in line:
-                        self.progress_log.insert("end", line, "error")
+                        self.progress_window.log_text.insert("end", line, "error")
                     elif "🛠" in line or "🔄" in line:
-                        self.progress_log.insert("end", line, "warning")
+                        self.progress_window.log_text.insert("end", line, "warning")
                     else:
-                        self.progress_log.insert("end", line, "info")
+                        self.progress_window.log_text.insert("end", line, "info")
                 
                 # Cấu hình màu cho các tag
-                self.progress_log.tag_config("success", foreground=LOG_COLORS["success"])
-                self.progress_log.tag_config("error", foreground=LOG_COLORS["error"])
-                self.progress_log.tag_config("warning", foreground=LOG_COLORS["warning"])
-                self.progress_log.tag_config("info", foreground=LOG_COLORS["info"])
+                self.progress_window.log_text.tag_config("success", foreground=LOG_COLORS["success"])
+                self.progress_window.log_text.tag_config("error", foreground=LOG_COLORS["error"])
+                self.progress_window.log_text.tag_config("warning", foreground=LOG_COLORS["warning"])
+                self.progress_window.log_text.tag_config("info", foreground=LOG_COLORS["info"])
                 
                 # Chỉ cuộn xuống dưới nếu trước đó đang ở cuối
                 if current_scroll > 0.9:  # Nếu đang ở gần cuối (90% trở lên)
-                    self.progress_log.see("end")
+                    self.progress_window.log_text.see("end")
                 else:  # Giữ nguyên vị trí cuộn
-                    self.progress_log.yview_moveto(current_scroll)
+                    self.progress_window.log_text.yview_moveto(current_scroll)
             
-            self.progress_log.configure(state="disabled")
+            self.progress_window.log_text.configure(state="disabled")
 
             # Cập nhật trạng thái bot trong grid
             for line in content:
@@ -746,30 +1290,82 @@ class BotManager(ctk.CTk):
         except Exception as e:
             logging.error(f"Error in refresh_progress_log: {str(e)}")
 
-    def pause_checking(self):
-        """Tạm dừng/tiếp tục kiểm tra"""
-        self.is_checking_paused = not self.is_checking_paused
-        if self.is_checking_paused:
-            self.pause_btn.configure(text="▶ Tiếp tục kiểm tra", fg_color="#43A047", hover_color="#2E7D32")
-            self.append_to_log("Đã tạm dừng kiểm tra")
-        else:
-            self.pause_btn.configure(text="⏸ Tạm dừng kiểm tra", fg_color="#FFA726", hover_color="#FB8C00")
-            self.append_to_log("Đã tiếp tục kiểm tra")
-            # Kích hoạt kiểm tra ngay lập tức
-            self.refresh_all_logs()
+    def format_total_runtime(self, seconds):
+        """Chuyển đổi tổng thời gian chạy thành định dạng dễ đọc"""
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0 or days > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0 or hours > 0 or days > 0:
+            parts.append(f"{minutes}m")
+        parts.append(f"{secs}s")
+        
+        return " ".join(parts)
 
-    def close_all_bots(self):
-        """Đóng tất cả bot"""
-        def task():
-            try:
-                for bot in self.bots:
-                    self.close_bot(bot)
-                    time.sleep(0.1)  # Tránh quá tải hệ thống
-                self.after(0, lambda: self.append_to_log("Đã đóng tất cả bot"))
-            except Exception as e:
-                self.after(0, lambda: self.append_to_log(f"Lỗi đóng tất cả bot: {str(e)}", is_error=True))
+    def check_service_status(self):
+        """Kiểm tra trạng thái của Runtime Service"""
+        try:
+            # Kiểm tra service có đang chạy không
+            result = subprocess.run(
+                ["sc", "query", "BotRuntimeTracker"],
+                capture_output=True,
+                text=True
+            )
+            
+            if "RUNNING" in result.stdout:
+                self.service_status_label.configure(
+                    text="✅ Runtime Service đang chạy",
+                    text_color="#43A047"
+                )
+            else:
+                self.service_status_label.configure(
+                    text="❌ Runtime Service không hoạt động",
+                    text_color="#E53935"
+                )
+        except Exception:
+            self.service_status_label.configure(
+                text="❌ Không thể kiểm tra Runtime Service",
+                text_color="#FFA726"
+            )
+        
+        # Kiểm tra lại sau 5 giây
+        self.after(5000, self.check_service_status)
 
-        self.executor.submit(task)
+    def refresh_all_logs(self):
+        """Làm mới cả 2 loại log"""
+        self.refresh_log()
+        self.refresh_progress_log()
+
+    def continuous_log_refresh(self):
+        """Liên tục cập nhật nội dung của cả hai log"""
+        if not self.is_checking_paused:
+            self.refresh_log()
+            self.refresh_progress_log()
+        self.after(1000, self.continuous_log_refresh)  # Lập lịch cho lần cập nhật tiếp theo
+
+    def append_to_log(self, text, is_error=False):
+        """Thêm text vào cả 2 log box"""
+        tag = "red" if is_error else "green"
+        
+        self.watchdog_window.log_text.configure(state="normal")
+        self.watchdog_window.log_text.insert("end", text + "\n", tag)
+        self.watchdog_window.log_text.configure(state="disabled")
+        
+        self.progress_window.log_text.configure(state="normal")
+        self.progress_window.log_text.insert("end", text + "\n", tag)
+        self.progress_window.log_text.configure(state="disabled")
+
+    def auto_refresh_watchdog(self):
+        """Tự động chạy watchdog.ps1 mỗi 2 phút để kiểm tra log"""
+        if not self.is_checking_paused:
+            self.run_watchdog()
+        self.after(120000, self.auto_refresh_watchdog)  # Chạy lại sau 2 phút
 
 if __name__ == "__main__":
     app = BotManager()
