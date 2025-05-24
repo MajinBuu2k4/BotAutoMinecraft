@@ -9,7 +9,7 @@ function Write-Log {
     $message | Out-File -FilePath $logFile -Encoding utf8 -Append
 }
 
-function Format-TimeSpan {
+function Format-TimeSpan { 
     param (
         [TimeSpan]$timeSpan
     )
@@ -22,8 +22,8 @@ function Format-TimeSpan {
     }
 }
 
-# Nếu muốn xóa log cũ mỗi lần chạy, bỏ comment dòng dưới
-# Clear-Content -Path $logFile -ErrorAction SilentlyContinue
+# Xóa log cũ mỗi lần chạy
+Clear-Content -Path $logFile -ErrorAction SilentlyContinue
 
 $maxBot = 15
 
@@ -36,19 +36,23 @@ $botList = 1..$maxBot | ForEach-Object {
     }
 }
 
+# Lấy tất cả process Vanguard một lần
+$allProcesses = Get-Process | Where-Object { $_.Path -like "*Vanguard*.exe" } -ErrorAction SilentlyContinue
+
 foreach ($bot in $botList) {
     $name   = $bot.Name
     $exe    = $bot.ExePath
     $script = $bot.Script
-
-    # Kiểm tra tiến trình bot
-    $process = Get-Process | Where-Object { $_.Path -eq $exe } -ErrorAction SilentlyContinue
+    
+    # Tìm process trong danh sách đã lọc
+    $process = $allProcesses | Where-Object { $_.Path -eq $exe }
 
     if ($process) {
         $timeSpan = New-TimeSpan -Start $process.StartTime -End (Get-Date)
         $formattedTime = Format-TimeSpan -timeSpan $timeSpan
         Write-Log "✅ [$name] OK ($formattedTime trước)"
     } else {
-        Write-Log "❌ [$name] offline"
+        Write-Log "❌ [$name] offline → khởi động lại"
+        Start-Process -FilePath $exe -ArgumentList $script -WindowStyle Minimized
     }
 }

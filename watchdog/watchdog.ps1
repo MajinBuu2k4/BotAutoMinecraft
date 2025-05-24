@@ -8,12 +8,12 @@ function Write-Log {
     $message | Out-File -FilePath $logFile -Encoding utf8 -Append
 }
 
-
-# Nếu muốn xóa log cũ mỗi lần chạy, uncomment dòng dưới
-# Clear-Content -Path $logFile -ErrorAction SilentlyContinue
+# Xóa log cũ mỗi lần chạy
+Clear-Content -Path $logFile -ErrorAction SilentlyContinue
 
 $maxBot = 15
 
+# Tạo danh sách bot
 $botList = 1..$maxBot | ForEach-Object {
     $id = "{0:D2}" -f $_
     [PSCustomObject]@{
@@ -24,6 +24,9 @@ $botList = 1..$maxBot | ForEach-Object {
     }
 }
 
+# Lấy tất cả processes Vanguard một lần
+$allProcesses = Get-Process | Where-Object { $_.Path -like "*Vanguard*.exe" } -ErrorAction SilentlyContinue
+
 foreach ($bot in $botList) {
     $name   = $bot.Name
     $log    = $bot.LogPath
@@ -31,33 +34,46 @@ foreach ($bot in $botList) {
     $script = $bot.Script
     $needRestart = $false
 
-    # Kiểm tra log
-    if (Test-Path $log) {
-        $lastWrite = (Get-Item $log).LastWriteTime
-        $secondsAgo = (New-TimeSpan -Start $lastWrite -End (Get-Date)).TotalSeconds
-        $lastLine = Get-Content $log -Tail 1
+    # Tìm process trong danh sách đã lọc
+    $process = $allProcesses | Where-Object { $_.Path -eq $exe }
 
-        if ($secondsAgo -gt 15) {
-            Write-Log "⏰ [$name] log quá cũ ($([math]::Round($secondsAgo))s) → restart"
-            $needRestart = $true
-        } elseif ($lastLine -notmatch 'ALIVE-INGAME') {
-            Write-Log "📄 [$name] trạng thái không ổn ($lastLine) → restart"
-            $needRestart = $true
-        } else {
-            Write-Log "✅ [$name] OK ($([math]::Round($secondsAgo))s trước)"
+    # Kiểm tra log nếu process đang chạy hoặc file log tồn tại
+    if ((Test-Path $log) -and ($process -or !(Test-Path $log))) {
+        try {
+            $lastWrite = (Get-Item $log).LastWriteTime
+            $secondsAgo = (New-TimeSpan -Start $lastWrite -End (Get-Date)).TotalSeconds
+            
+            # Đọc dòng cuối cùng của log hiệu quả hơn
+            $lastLine = Get-Content $log -Tail 1 -ErrorAction Stop
+
+            if ($secondsAgo -gt 15) {
+                Write-Log "⏰ [$name] log quá cũ ($([math]::Round($secondsAgo))s) → restart"
+                $needRestart = $true
+            }
+            elseif ($lastLine -notmatch 'ALIVE-INGAME') {
+                Write-Log "📄 [$name] trạng thái không ổn ($lastLine) → restart"
+                $needRestart = $true
+            }
+            else {
+                Write-Log "✅ [$name] OK ($([math]::Round($secondsAgo))s trước)"
+            }
         }
-    } else {
+        catch {
+            Write-Log "❌ [$name] lỗi đọc log → restart"
+            $needRestart = $true
+        }
+    }
+    else {
         Write-Log "❌ [$name] chưa có log → cần chạy"
         $needRestart = $true
     }
 
-    # Kiểm tra tiến trình bot
-    $process = Get-Process | Where-Object { $_.Path -eq $exe } -ErrorAction SilentlyContinue
-
+    # Xử lý khởi động/restart bot
     if (-not $process) {
         Write-Log "🛠 [$name] chưa chạy → khởi động"
         Start-Process -FilePath $exe -ArgumentList $script -WindowStyle Minimized
-    } elseif ($needRestart) {
+    }
+    elseif ($needRestart) {
         Write-Log "🔄 [$name] cần restart..."
         Stop-Process -Id $process.Id -Force
         Start-Process -FilePath $exe -ArgumentList $script -WindowStyle Minimized

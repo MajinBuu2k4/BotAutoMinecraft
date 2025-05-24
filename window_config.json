@@ -1,6 +1,6 @@
 {
-    "main_window": "1366x705+406+46",
-    "log_watchdog": "307x558+1025+60",
-    "log_progress": "309x412+710+61",
-    "runtime_stats": "381x470+328+55"
+    "main_window": "1039x500+863+15",
+    "log_watchdog": "352x558+1552+2",
+    "log_progress": "344x397+1204+0",
+    "runtime_stats": "381x470+446+24"
 }

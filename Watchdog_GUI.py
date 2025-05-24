@@ -225,8 +225,11 @@ class LogWindow(ctk.CTkToplevel):
     def __init__(self, parent, title, log_file, log_type="watchdog"):
         super().__init__(parent)
         self.title(title)
-        self.log_file = log_file
-        self.log_type = log_type
+        self.log_file = log_file    # Đường dẫn file log
+        self.log_type = log_type    # Loại log (watchdog hoặc progress)
+        self.parent = parent     # Cửa sổ cha
+        self.last_content = ""  # Lưu nội dung log cuối cùng
+        self.auto_refresh_active = True  # Flag để kiểm soát auto refresh
         
         # Thiết lập màu cho thanh title
         if self.log_type == "watchdog":
@@ -243,14 +246,10 @@ class LogWindow(ctk.CTkToplevel):
         if saved_geometry:
             self.geometry(saved_geometry)
         else:
-            # Cấu hình mặc định nếu chưa có
             self.geometry("800x600")
-            # Căn giữa cửa sổ so với cửa sổ chính
             self.center_window(parent)
         
-        # Đặt cửa sổ luôn hiển thị trên cửa sổ chính nhưng cho phép tương tác với cửa sổ chính
-        self.transient(parent)  # Giữ lại để cửa sổ log luôn ở trên cửa sổ chính
-        # Bỏ grab_set() để cho phép tương tác với cửa sổ chính
+        self.transient(parent)
         
         # Tạo textbox cho log
         self.log_text = ctk.CTkTextbox(
@@ -262,17 +261,34 @@ class LogWindow(ctk.CTkToplevel):
         )
         self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Thêm nút đóng
+        # Cấu hình màu cho các tag
+        self.log_text.tag_config("success", foreground=LOG_COLORS["success"])
+        self.log_text.tag_config("error", foreground=LOG_COLORS["error"])
+        self.log_text.tag_config("warning", foreground=LOG_COLORS["warning"])
+        self.log_text.tag_config("info", foreground=LOG_COLORS["info"])
+        
+        # Frame chứa các nút
         self.button_frame = ctk.CTkFrame(self)
         self.button_frame.pack(side="bottom", fill="x", padx=10, pady=10)
         
+        # Thêm nút bật/tắt auto refresh
+        self.auto_refresh_btn = ctk.CTkButton(
+            self.button_frame,
+            text="⏸ Tạm dừng cập nhật",
+            command=self.toggle_auto_refresh,
+            width=150,
+            fg_color="#FFA726",
+            hover_color="#FB8C00"
+        )
+        self.auto_refresh_btn.pack(side="left", padx=5)
+
         refresh_button = ctk.CTkButton(
             self.button_frame,
             text="🔄 Làm mới",
             command=self.refresh_log,
             width=100,
-            fg_color=title_color,  # Sử dụng cùng màu với thanh title
-            hover_color=self.adjust_color_brightness(title_color, -20)  # Tối hơn một chút khi hover
+            fg_color=title_color,
+            hover_color=self.adjust_color_brightness(title_color, -20)
         )
         refresh_button.pack(side="left", padx=5)
 
@@ -284,19 +300,53 @@ class LogWindow(ctk.CTkToplevel):
         )
         close_button.pack(side="right", padx=5)
         
-        # Bind các sự kiện
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Configure>", self.on_window_configure)
         
-        # Focus vào cửa sổ này
         self.focus_force()
+        self.read_and_display_log()
         
-        # Cập nhật log ban đầu
-        self.refresh_log()
-        
-        # Tự động cập nhật log mỗi giây
-        self.after(1000, self.auto_refresh)
-    
+        # Bắt đầu auto refresh
+        self.start_auto_refresh()
+
+    def toggle_auto_refresh(self):
+        """Bật/tắt tự động cập nhật"""
+        self.auto_refresh_active = not self.auto_refresh_active
+        if self.auto_refresh_active:
+            self.auto_refresh_btn.configure(
+                text="⏸ Tạm dừng cập nhật",
+                fg_color="#FFA726"
+            )
+            self.start_auto_refresh()
+        else:
+            self.auto_refresh_btn.configure(
+                text="▶ Tiếp tục cập nhật",
+                fg_color="#43A047"
+            )
+
+    def start_auto_refresh(self):
+        """Bắt đầu tự động cập nhật log"""
+        if self.auto_refresh_active and self.winfo_exists():
+            try:
+                if os.path.exists(self.log_file):
+                    with open(self.log_file, 'r', encoding='utf-8') as f:
+                        current_content = f.read()
+                    
+                    # Chỉ cập nhật nếu nội dung thay đổi
+                    if current_content != self.last_content:
+                        self.last_content = current_content
+                        self.update_log_content(current_content)
+            except Exception as e:
+                logging.error(f"Lỗi khi tự động cập nhật log: {str(e)}")
+            
+            # Lên lịch kiểm tra tiếp theo sau 5 giây
+            self.after(5000, self.start_auto_refresh)
+
+    def destroy(self):
+        """Override phương thức destroy để dừng auto refresh"""
+        self.auto_refresh_active = False
+        super().destroy()
+
     def set_title_bar_color(self, color):
         """Thay đổi màu thanh title (Windows only)"""
         try:
@@ -367,67 +417,102 @@ class LogWindow(ctk.CTkToplevel):
         """Lưu trạng thái cửa sổ"""
         window_config.save_window_state(f"log_{self.log_type}", self.geometry())
 
-    def auto_refresh(self):
-        """Tự động cập nhật log nếu cửa sổ còn mở"""
-        if self.winfo_exists():
-            self.refresh_log()
-            self.after(1000, self.auto_refresh)
-    
     def refresh_log(self):
-        """Cập nhật nội dung log"""
+        """Làm mới log bằng cách chạy script tương ứng"""
+        try:
+            if self.log_type == "watchdog":
+                script_path = PS_SCRIPT
+            else:
+                script_path = PROGRESS_PS_SCRIPT
+
+            # Xóa nội dung log hiện tại
+            if os.path.exists(self.log_file):
+                with open(self.log_file, 'w', encoding='utf-8') as f:
+                    f.write('')
+
+            # Đọc nội dung script
+            with open(script_path, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+
+            # Chạy PowerShell script
+            process = subprocess.Popen(
+                ["powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-Command", script_content],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            # Đợi script hoàn thành với timeout
+            try:
+                process.wait(timeout=30)
+                
+                # Đợi một chút để đảm bảo file log đã được ghi
+                time.sleep(1)
+                
+                # Đọc và hiển thị log mới
+                self.read_and_display_log()
+                
+            except subprocess.TimeoutExpired:
+                process.kill()
+                self.append_to_log("Script timeout sau 30 giây", is_error=True)
+
+        except Exception as e:
+            error_msg = f"Lỗi khi làm mới log: {str(e)}"
+            logging.error(error_msg)
+            self.append_to_log(error_msg, is_error=True)
+
+    def read_and_display_log(self):
+        """Đọc và hiển thị nội dung log"""
         try:
             if os.path.exists(self.log_file):
-                with open(self.log_file, "r", encoding="utf-8") as f:
-                    content = f.readlines()
-                
-                # Lưu vị trí cuộn hiện tại
-                current_scroll = self.log_text.yview()[0]
+                with open(self.log_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
                 
                 self.log_text.configure(state="normal")
                 self.log_text.delete("1.0", "end")
                 
-                for line in content:
-                    if self.log_type == "watchdog":
-                        if "OK" in line:
-                            self.log_text.insert("end", line, "success")
-                        elif "Error" in line or "Exception" in line:
-                            self.log_text.insert("end", line, "error")
-                        elif "restart" in line.lower():
-                            self.log_text.insert("end", line, "warning")
-                        else:
-                            self.log_text.insert("end", line, "info")
-                    else:  # progress log
-                        if "✅" in line:
-                            self.log_text.insert("end", line, "success")
-                        elif "❌" in line:
-                            self.log_text.insert("end", line, "error")
-                        elif "🛠" in line or "🔄" in line:
-                            self.log_text.insert("end", line, "warning")
-                        else:
-                            self.log_text.insert("end", line, "info")
-                
-                # Cấu hình màu cho các tag
-                self.log_text.tag_config("success", foreground=LOG_COLORS["success"])
-                self.log_text.tag_config("error", foreground=LOG_COLORS["error"])
-                self.log_text.tag_config("warning", foreground=LOG_COLORS["warning"])
-                self.log_text.tag_config("info", foreground=LOG_COLORS["info"])
-                
-                # Giữ nguyên vị trí cuộn nếu không ở cuối
-                if current_scroll > 0.9:
-                    self.log_text.see("end")
-                else:
-                    self.log_text.yview_moveto(current_scroll)
+                for line in content.splitlines():
+                    if "✅" in line or "OK" in line:
+                        self.log_text.insert("end", line + "\n", "success")
+                    elif "❌" in line or "Error" in line:
+                        self.log_text.insert("end", line + "\n", "error")
+                    elif "⏰" in line or "🔄" in line or "restart" in line:
+                        self.log_text.insert("end", line + "\n", "warning")
+                    else:
+                        self.log_text.insert("end", line + "\n", "info")
                 
                 self.log_text.configure(state="disabled")
-                
+                self.log_text.see("end")
         except Exception as e:
-            logging.error(f"Error refreshing log: {str(e)}")
+            error_msg = f"Lỗi đọc log: {str(e)}"
+            logging.error(error_msg)
+            self.append_to_log(error_msg, is_error=True)
+
+    def append_to_log(self, text, is_error=False):
+        """Thêm text vào log"""
+        self.log_text.configure(state="normal")
+        tag = "error" if is_error else "info"
+        self.log_text.insert("end", text + "\n", tag)
+        self.log_text.configure(state="disabled")
+        self.log_text.see("end")
+
+    def update_log_content(self, content):
+        """Cập nhật nội dung log"""
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("end", content)
+        self.log_text.configure(state="disabled")
+        self.log_text.see("end")
 
 class BotManager(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("BotAutoMinecraft Manager")
         self.iconbitmap(ICON_PATH)
+        
+        # Thêm biến theo dõi trạng thái watchdog
+        self.watchdog_running = False
+        self.progress_check_running = False
         
         # Thêm lock cho việc khởi động bot
         self.bot_locks = {}
@@ -1048,31 +1133,61 @@ class BotManager(ctk.CTk):
         popup.after(2000, popup.destroy)
 
     def run_watchdog(self):
+        """Chạy watchdog.ps1 để kiểm tra và khởi động lại bot nếu cần"""
+        if self.watchdog_running:
+            logging.info("Watchdog đã đang chạy")
+            return
+            
         def task():
             try:
+                self.watchdog_running = True
                 if os.path.exists(LOG_FILE):
                     os.remove(LOG_FILE)
                 
                 # Chạy PowerShell script ẩn
                 if sys.platform == "win32":
-                    # Cách chạy cho Windows
-                    subprocess.Popen(
-                        ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", PS_SCRIPT],
+                    with open(PS_SCRIPT, 'r', encoding='utf-8') as f:
+                        script_content = f.read()
+                    
+                    process = subprocess.Popen(
+                        ["powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-Command", script_content],
                         creationflags=subprocess.CREATE_NO_WINDOW,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE
                     )
+                    
+                    try:
+                        # Tăng timeout lên 120 giây (2 phút)
+                        process.wait(timeout=120)
+                        
+                        # Chỉ cập nhật nội dung nếu cửa sổ log đang mở
+                        if self.watchdog_window and self.watchdog_window.winfo_exists():
+                            if os.path.exists(LOG_FILE):
+                                with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                                    log_content = f.read()
+                                self.watchdog_window.update_log_content(log_content)
+                        
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        error_msg = "Watchdog đang chạy quá lâu (>2 phút). Có thể do hệ thống đang chậm hoặc có nhiều bot cần kiểm tra. Thử lại sau."
+                        logging.error(error_msg)
+                        return
+                        
+                    if process.returncode != 0:
+                        stderr = process.stderr.read().decode('utf-8', errors='ignore')
+                        error_msg = f"Lỗi chạy watchdog: {stderr}"
+                        logging.error(error_msg)
                 else:
-                    # Cách chạy cho các hệ điều hành khác
                     subprocess.Popen(
-                        ["powershell", "-File", PS_SCRIPT],
+                        ["powershell", "-Command", script_content],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE
                     )
             except Exception as e:
-                self.after(0, lambda: self.append_to_log(f"Lỗi: {e}", is_error=True))
+                error_msg = f"Lỗi chạy watchdog: {str(e)}"
+                logging.error(error_msg)
             finally:
-                self.after(0, self.refresh_log)
+                self.watchdog_running = False
 
         self.executor.submit(task)
 
@@ -1276,129 +1391,60 @@ class BotManager(ctk.CTk):
     def auto_refresh_progress(self):
         """Tự động chạy watchdog_progress.ps1 để kiểm tra trạng thái"""
         if not self.is_checking_paused:
+            if self.progress_check_running:
+                logging.info("Kiểm tra progress đang chạy, bỏ qua lần này")
+                self.after(20000, self.auto_refresh_progress)
+                return
+                
             def task():
                 try:
+                    self.progress_check_running = True
                     if os.path.exists(PROGRESS_LOG_FILE):
                         os.remove(PROGRESS_LOG_FILE)
                     
                     # Chạy PowerShell script ẩn
                     if sys.platform == "win32":
+                        with open(PROGRESS_PS_SCRIPT, 'r', encoding='utf-8') as f:
+                            script_content = f.read()
+                        
                         process = subprocess.Popen(
-                            ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", PROGRESS_PS_SCRIPT],
+                            ["powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-Command", script_content],
                             creationflags=subprocess.CREATE_NO_WINDOW,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE
                         )
                         
-                        # Đợi script hoàn thành
-                        process.wait()
-                        
-                        # Đọc log và kiểm tra bot nào offline
-                        if os.path.exists(PROGRESS_LOG_FILE):
-                            with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
-                                log_content = f.read()
+                        try:
+                            # Tăng timeout lên 60 giây
+                            process.wait(timeout=60)
                             
-                            # Tìm các bot offline và khởi động lần lượt
-                            for bot in self.bots:
-                                if f"❌ [{bot}] offline" in log_content:
-                                    # Kiểm tra xem bot có đang bị lock không
-                                    if bot in self.bot_locks and self.bot_locks[bot]:
-                                        logging.info(f"Bỏ qua {bot}: đang trong quá trình khởi động")
-                                        continue
-                                        
-                                    # Kiểm tra thời gian khởi động gần nhất
-                                    current_time = time.time()
-                                    if bot in self.last_start_times:
-                                        time_since_last_start = current_time - self.last_start_times[bot]
-                                        if time_since_last_start < 30:
-                                            logging.info(f"Bỏ qua {bot}: mới khởi động cách đây {int(time_since_last_start)} giây")
-                                            continue
-                                    
-                                    logging.info(f"Phát hiện {bot} offline, chuẩn bị khởi động")
-                                    time.sleep(5)  # Đợi 5 giây trước khi khởi động bot tiếp theo
-                                    self.run_bot(bot)
-                    else:
-                        subprocess.Popen(
-                            ["powershell", "-File", PROGRESS_PS_SCRIPT],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE
-                        )
+                            # Chỉ cập nhật nội dung nếu cửa sổ log đang mở
+                            if self.progress_window and self.progress_window.winfo_exists():
+                                if os.path.exists(PROGRESS_LOG_FILE):
+                                    with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
+                                        log_content = f.read()
+                                    self.progress_window.update_log_content(log_content)
+                            
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            error_msg = "Kiểm tra progress đang chạy quá lâu (>1 phút). Có thể do hệ thống đang chậm. Thử lại sau."
+                            logging.error(error_msg)
+                            return
+                        
+                        if process.returncode != 0:
+                            stderr = process.stderr.read().decode('utf-8', errors='ignore')
+                            logging.error(f"Lỗi kiểm tra progress: {stderr}")
+                            return
+                            
                 except Exception as e:
                     logging.error(f"Lỗi kiểm tra progress: {str(e)}")
                 finally:
-                    self.after(0, self.refresh_progress_log)
+                    self.progress_check_running = False
 
             self.executor.submit(task)
         
-        # Tăng thời gian giữa các lần kiểm tra lên 60 giây
-        self.after(60000, self.auto_refresh_progress)  # Chạy lại sau 60 giây
-
-    def refresh_progress_log(self):
-        """Đọc và cập nhật progress log"""
-        def load_log():
-            if os.path.exists(PROGRESS_LOG_FILE):
-                try:
-                    with open(PROGRESS_LOG_FILE, "r", encoding="utf-8") as f:
-                        return f.readlines()
-                except Exception as e:
-                    logging.error(f"Error reading progress log: {str(e)}")
-                    return [f"Lỗi đọc progress log file: {str(e)}\n"]
-            return []
-
-        def update_progress_display(content):
-            self.progress_window.log_text.configure(state="normal")
-            current_content = self.progress_window.log_text.get("1.0", "end-1c")
-            new_content = "".join(content)
-            
-            # Chỉ cập nhật và cuộn xuống nếu có nội dung mới
-            if current_content != new_content:
-                # Lưu vị trí cuộn hiện tại
-                current_scroll = self.progress_window.log_text.yview()[0]
-                
-                self.progress_window.log_text.delete("1.0", "end")
-                for line in content:
-                    if "✅" in line:
-                        self.progress_window.log_text.insert("end", line, "success")
-                    elif "❌" in line:
-                        self.progress_window.log_text.insert("end", line, "error")
-                    elif "🛠" in line or "🔄" in line:
-                        self.progress_window.log_text.insert("end", line, "warning")
-                    else:
-                        self.progress_window.log_text.insert("end", line, "info")
-                
-                # Cấu hình màu cho các tag
-                self.progress_window.log_text.tag_config("success", foreground=LOG_COLORS["success"])
-                self.progress_window.log_text.tag_config("error", foreground=LOG_COLORS["error"])
-                self.progress_window.log_text.tag_config("warning", foreground=LOG_COLORS["warning"])
-                self.progress_window.log_text.tag_config("info", foreground=LOG_COLORS["info"])
-                
-                # Chỉ cuộn xuống dưới nếu trước đó đang ở cuối
-                if current_scroll > 0.9:  # Nếu đang ở gần cuối (90% trở lên)
-                    self.progress_window.log_text.see("end")
-                else:  # Giữ nguyên vị trí cuộn
-                    self.progress_window.log_text.yview_moveto(current_scroll)
-            
-            self.progress_window.log_text.configure(state="disabled")
-
-            # Cập nhật trạng thái bot trong grid
-            for line in content:
-                for widget in self.widgets:
-                    if widget["name"] in line:
-                        if "OK" in line:
-                            widget["status_var"].set("Online")
-                            widget["status_label"].configure(text_color=STATUS_COLORS["online"])
-                        elif "khởi động" in line:
-                            widget["status_var"].set("Starting...")
-                            widget["status_label"].configure(text_color=STATUS_COLORS["starting"])
-                        else:
-                            widget["status_var"].set("Offline")
-                            widget["status_label"].configure(text_color=STATUS_COLORS["offline"])
-
-        try:
-            content = load_log()
-            self.after(0, lambda: update_progress_display(content))
-        except Exception as e:
-            logging.error(f"Error in refresh_progress_log: {str(e)}")
+        # Chạy lại sau 20 giây
+        self.after(20000, self.auto_refresh_progress)
 
     def format_total_runtime(self, seconds):
         """Chuyển đổi tổng thời gian chạy thành định dạng dễ đọc"""
@@ -1472,10 +1518,16 @@ class BotManager(ctk.CTk):
         self.progress_window.log_text.configure(state="disabled")
 
     def auto_refresh_watchdog(self):
-        """Tự động chạy watchdog.ps1 mỗi 2 phút để kiểm tra log"""
+        """Tự động chạy watchdog.ps1 định kỳ"""
         if not self.is_checking_paused:
+            if self.watchdog_running:
+                logging.info("Watchdog đã đang chạy, bỏ qua lần này")
+                self.after(120000, self.auto_refresh_watchdog)  # 2 phút
+                return
             self.run_watchdog()
-        self.after(120000, self.auto_refresh_watchdog)  # Chạy lại sau 2 phút
+        
+        # Chạy lại sau 2 phút
+        self.after(120000, self.auto_refresh_watchdog)
 
 if __name__ == "__main__":
     app = BotManager()
