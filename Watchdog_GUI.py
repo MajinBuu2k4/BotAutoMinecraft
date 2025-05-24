@@ -275,7 +275,7 @@ class LogWindow(ctk.CTkToplevel):
             hover_color=self.adjust_color_brightness(title_color, -20)  # Tối hơn một chút khi hover
         )
         refresh_button.pack(side="left", padx=5)
-        
+
         close_button = ctk.CTkButton(
             self.button_frame,
             text="Đóng",
@@ -428,6 +428,10 @@ class BotManager(ctk.CTk):
         super().__init__()
         self.title("BotAutoMinecraft Manager")
         self.iconbitmap(ICON_PATH)
+        
+        # Thêm lock cho việc khởi động bot
+        self.bot_locks = {}
+        self.last_start_times = {}
         
         # Khôi phục vị trí và kích thước từ cấu hình
         saved_geometry = window_config.get_window_state("main_window")
@@ -877,20 +881,98 @@ class BotManager(ctk.CTk):
         self.executor.submit(self.run_bot, bot_name)
 
     def run_bot(self, bot_name):
-        shortcut_path = os.path.join(SHORTCUT_DIR, f"{bot_name}.lnk")
-        
-        if os.path.exists(shortcut_path):
+        try:
+            # Kiểm tra lock và thời gian khởi động gần nhất
+            current_time = time.time()
+            if bot_name in self.last_start_times:
+                time_since_last_start = current_time - self.last_start_times[bot_name]
+                if time_since_last_start < 30:  # Không cho phép khởi động lại trong vòng 30 giây
+                    logging.warning(f"Bỏ qua yêu cầu khởi động {bot_name}: mới khởi động cách đây {int(time_since_last_start)} giây")
+                    return
+            
+            # Kiểm tra và thiết lập lock
+            if bot_name in self.bot_locks and self.bot_locks[bot_name]:
+                logging.warning(f"Bỏ qua yêu cầu khởi động {bot_name}: đang trong quá trình khởi động")
+                return
+                
+            self.bot_locks[bot_name] = True
+            logging.info(f"=== Bắt đầu kiểm tra khởi động {bot_name} ===")
+            
             try:
-                subprocess.Popen(
+                # Kiểm tra process
+                processes = self.get_all_processes_cached()
+                process_name = f"{bot_name.lower()}.exe"
+                
+                if process_name in processes:
+                    try:
+                        proc = processes[process_name]
+                        if proc.is_running():
+                            msg = f"{bot_name} đã đang chạy (PID: {proc.pid})!"
+                            logging.info(msg)
+                            self.after(0, lambda: self.popup_message(msg, "#FFA726"))
+                            return
+                    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                        logging.warning(f"Lỗi kiểm tra process {bot_name}: {str(e)}")
+                
+                # Kiểm tra cửa sổ
+                windows = gw.getWindowsWithTitle(bot_name)
+                if windows:
+                    msg = f"{bot_name} đã có {len(windows)} cửa sổ đang chạy!"
+                    logging.warning(msg)
+                    self.after(0, lambda: self.popup_message(msg, "#FFA726"))
+                    return
+                
+                # Kiểm tra shortcut
+                shortcut_path = os.path.join(SHORTCUT_DIR, f"{bot_name}.lnk")
+                if not os.path.exists(shortcut_path):
+                    msg = f"Không tìm thấy shortcut {bot_name}.lnk!"
+                    logging.error(msg)
+                    self.after(0, lambda: self.popup_message(msg, "red"))
+                    return
+                
+                logging.info(f"Chuẩn bị khởi động {bot_name} từ shortcut: {shortcut_path}")
+                
+                # Khởi động bot
+                process = subprocess.Popen(
                     ["cmd", "/c", "start", "", shortcut_path],
                     shell=True,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
                 )
-                self.after(0, lambda: self.popup_message(f"Đã khởi động {bot_name}", "#43A047"))
-            except Exception as e:
-                self.after(0, lambda: self.popup_message(f"Lỗi khởi động {bot_name}: {str(e)}", "red"))
-        else:
-            self.after(0, lambda: self.popup_message(f"Không tìm thấy shortcut {bot_name}.lnk!", "red"))
+                
+                # Cập nhật thời gian khởi động gần nhất
+                self.last_start_times[bot_name] = current_time
+                
+                # Đợi và kiểm tra kết quả
+                time.sleep(5)  # Đợi lâu hơn để đảm bảo process đã khởi động
+                
+                if process.poll() is None:
+                    msg = f"Đã khởi động {bot_name} thành công"
+                    logging.info(msg)
+                    self.after(0, lambda: self.popup_message(msg, "#43A047"))
+                else:
+                    stdout, stderr = process.communicate()
+                    error_msg = f"Bot {bot_name} khởi động không thành công. Exit code: {process.returncode}"
+                    if stdout:
+                        error_msg += f"\nOutput: {stdout.decode('utf-8', errors='ignore')}"
+                    if stderr:
+                        error_msg += f"\nError: {stderr.decode('utf-8', errors='ignore')}"
+                    logging.error(error_msg)
+                    self.after(0, lambda: self.popup_message(error_msg, "red"))
+                
+            finally:
+                # Giải phóng lock
+                self.bot_locks[bot_name] = False
+                
+        except Exception as e:
+            error_msg = f"Lỗi không xác định khi khởi động {bot_name}: {str(e)}"
+            logging.error(error_msg)
+            self.after(0, lambda: self.popup_message(error_msg, "red"))
+            self.bot_locks[bot_name] = False  # Đảm bảo giải phóng lock trong trường hợp lỗi
+        
+        finally:
+            logging.info(f"=== Kết thúc quá trình khởi động {bot_name} ===\n")
 
     def close_bot_async(self, bot_name):
         """Đóng bot trong thread riêng"""
@@ -1192,7 +1274,7 @@ class BotManager(ctk.CTk):
         self.quit()
 
     def auto_refresh_progress(self):
-        """Tự động chạy watchdog_progress.ps1 mỗi 10 giây để kiểm tra trạng thái"""
+        """Tự động chạy watchdog_progress.ps1 để kiểm tra trạng thái"""
         if not self.is_checking_paused:
             def task():
                 try:
@@ -1201,27 +1283,55 @@ class BotManager(ctk.CTk):
                     
                     # Chạy PowerShell script ẩn
                     if sys.platform == "win32":
-                        # Cách chạy cho Windows
-                        subprocess.Popen(
+                        process = subprocess.Popen(
                             ["powershell.exe", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-NoProfile", "-File", PROGRESS_PS_SCRIPT],
                             creationflags=subprocess.CREATE_NO_WINDOW,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE
                         )
+                        
+                        # Đợi script hoàn thành
+                        process.wait()
+                        
+                        # Đọc log và kiểm tra bot nào offline
+                        if os.path.exists(PROGRESS_LOG_FILE):
+                            with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
+                                log_content = f.read()
+                            
+                            # Tìm các bot offline và khởi động lần lượt
+                            for bot in self.bots:
+                                if f"❌ [{bot}] offline" in log_content:
+                                    # Kiểm tra xem bot có đang bị lock không
+                                    if bot in self.bot_locks and self.bot_locks[bot]:
+                                        logging.info(f"Bỏ qua {bot}: đang trong quá trình khởi động")
+                                        continue
+                                        
+                                    # Kiểm tra thời gian khởi động gần nhất
+                                    current_time = time.time()
+                                    if bot in self.last_start_times:
+                                        time_since_last_start = current_time - self.last_start_times[bot]
+                                        if time_since_last_start < 30:
+                                            logging.info(f"Bỏ qua {bot}: mới khởi động cách đây {int(time_since_last_start)} giây")
+                                            continue
+                                    
+                                    logging.info(f"Phát hiện {bot} offline, chuẩn bị khởi động")
+                                    time.sleep(5)  # Đợi 5 giây trước khi khởi động bot tiếp theo
+                                    self.run_bot(bot)
                     else:
-                        # Cách chạy cho các hệ điều hành khác
                         subprocess.Popen(
                             ["powershell", "-File", PROGRESS_PS_SCRIPT],
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE
                         )
                 except Exception as e:
-                    self.after(0, lambda: self.append_to_log(f"Lỗi kiểm tra progress: {e}", is_error=True))
+                    logging.error(f"Lỗi kiểm tra progress: {str(e)}")
                 finally:
                     self.after(0, self.refresh_progress_log)
 
             self.executor.submit(task)
-        self.after(10000, self.auto_refresh_progress)  # Chạy lại sau 10 giây
+        
+        # Tăng thời gian giữa các lần kiểm tra lên 60 giây
+        self.after(60000, self.auto_refresh_progress)  # Chạy lại sau 60 giây
 
     def refresh_progress_log(self):
         """Đọc và cập nhật progress log"""

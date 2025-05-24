@@ -52,20 +52,58 @@ BotAutoMinecraft/
    - Cài đặt và khởi động service
 
 ### Quản lý Service
-Sử dụng `setup_service.py` trong thư mục service:
-```bash
-# Kiểm tra trạng thái
-python service/setup_service.py status
+File `setup_service.py` trong thư mục service dùng để quản lý Bot Runtime Tracker Service với các chức năng:
+- Cài đặt/gỡ cài đặt service
+- Khởi động/dừng service 
+- Kiểm tra trạng thái
 
-# Khởi động service
-python service/setup_service.py start
+Cách sử dụng:
+1. Mở Command Prompt hoặc PowerShell với quyền Administrator
+2. Di chuyển vào thư mục service:
+   ```bash
+   cd path\to\service
+   ```
 
-# Dừng service
-python service/setup_service.py stop
+3. Các lệnh có sẵn:
+   ```bash
+   # Kiểm tra trạng thái service
+   python setup_service.py status
+     
+   # Khởi động service
+   python setup_service.py start
+     
+   # Dừng service
+   python setup_service.py stop
+     
+   # Cài đặt service
+   python setup_service.py install
+     
+   # Gỡ cài đặt service
+   python setup_service.py uninstall
+   ```
 
-# Gỡ cài đặt service
-python service/setup_service.py uninstall
-```
+Các trạng thái có thể có:
+- ✅ Service đang chạy    - Service hoạt động bình thường
+- ⏹ Service đã dừng      - Service đã dừng hoạt động
+- ❌ Service chưa cài đặt - Service chưa được cài đặt
+
+Xử lý sự cố thường gặp:
+1. Nếu gặp lỗi "Access Denied":
+   - Đảm bảo bạn đang chạy Command Prompt/PowerShell với quyền Administrator
+
+2. Nếu service không tự động khởi động sau khi restart:
+   - Kiểm tra trạng thái: `python setup_service.py status`
+   - Thử dừng và khởi động lại service:
+     ```bash
+     python setup_service.py stop
+     python setup_service.py start
+     ```
+
+3. Nếu cần cài đặt lại hoàn toàn:
+   ```bash
+   python setup_service.py uninstall
+   python setup_service.py install
+   ```
 
 ## Sử dụng
 
