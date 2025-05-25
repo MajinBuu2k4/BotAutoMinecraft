@@ -36,7 +36,7 @@ CONFIG_FILE = os.path.join(BOT_DIR, "window_config.json")  # File lưu cấu hì
 LOG_COLORS = {
     "success": "#4CAF50",  # Xanh lá đậm
     "error": "#F44336",    # Đỏ tươi
-    "warning": "#FFA726",  # Cam
+    "warning": "#FFA726",  # Camzzzzzzz
     "info": "#90CAF9",     # Xanh dương nhạt
     "title": "#E0E0E0",    # Xám sáng cho tiêu đề
     "background": "#2B2B2B" # Nền tối
@@ -282,16 +282,6 @@ class LogWindow(ctk.CTkToplevel):
         )
         self.auto_refresh_btn.pack(side="left", padx=5)
 
-        refresh_button = ctk.CTkButton(
-            self.button_frame,
-            text="🔄 Làm mới",
-            command=self.refresh_log,
-            width=100,
-            fg_color=title_color,
-            hover_color=self.adjust_color_brightness(title_color, -20)
-        )
-        refresh_button.pack(side="left", padx=5)
-
         close_button = ctk.CTkButton(
             self.button_frame,
             text="Đóng",
@@ -417,50 +407,6 @@ class LogWindow(ctk.CTkToplevel):
         """Lưu trạng thái cửa sổ"""
         window_config.save_window_state(f"log_{self.log_type}", self.geometry())
 
-    def refresh_log(self):
-        """Làm mới log bằng cách chạy script tương ứng"""
-        try:
-            if self.log_type == "watchdog":
-                script_path = PS_SCRIPT
-            else:
-                script_path = PROGRESS_PS_SCRIPT
-
-            # Xóa nội dung log hiện tại
-            if os.path.exists(self.log_file):
-                with open(self.log_file, 'w', encoding='utf-8') as f:
-                    f.write('')
-
-            # Đọc nội dung script
-            with open(script_path, 'r', encoding='utf-8') as f:
-                script_content = f.read()
-
-            # Chạy PowerShell script
-            process = subprocess.Popen(
-                ["powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-Command", script_content],
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-
-            # Đợi script hoàn thành với timeout
-            try:
-                process.wait(timeout=30)
-                
-                # Đợi một chút để đảm bảo file log đã được ghi
-                time.sleep(1)
-                
-                # Đọc và hiển thị log mới
-                self.read_and_display_log()
-                
-            except subprocess.TimeoutExpired:
-                process.kill()
-                self.append_to_log("Script timeout sau 30 giây", is_error=True)
-
-        except Exception as e:
-            error_msg = f"Lỗi khi làm mới log: {str(e)}"
-            logging.error(error_msg)
-            self.append_to_log(error_msg, is_error=True)
-
     def read_and_display_log(self):
         """Đọc và hiển thị nội dung log"""
         try:
@@ -509,6 +455,10 @@ class BotManager(ctk.CTk):
         super().__init__()
         self.title("BotAutoMinecraft Manager")
         self.iconbitmap(ICON_PATH)
+        
+        # Thêm biến đếm ngược
+        self.next_watchdog_check = 120  # 2 phút = 120 giây
+        self.next_progress_check = 20   # 20 giây
         
         # Thêm biến theo dõi trạng thái watchdog
         self.watchdog_running = False
@@ -562,11 +512,7 @@ class BotManager(ctk.CTk):
         # Cập nhật logs và runtime
         self.after(1000, self.update_runtime_display)  # Cập nhật hiển thị runtime mỗi giây
         self.after(1000, self.check_service_status)  # Kiểm tra trạng thái service
-
-        # Kích hoạt ngay lập tức các chức năng kiểm tra khi khởi động
-        self.run_watchdog()  # Chạy watchdog ngay lập tức
-        self.auto_refresh_progress()  # Bắt đầu kiểm tra progress
-        self.auto_refresh_watchdog()  # Bắt đầu kiểm tra watchdog
+        self.after(1000, self.update_countdown)  # Bắt đầu đếm ngược
 
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.create_tray_icon()
@@ -628,8 +574,13 @@ class BotManager(ctk.CTk):
         self.btn_frame = ctk.CTkFrame(self)
         self.btn_frame.pack(pady=5)
 
-        self.run_btn = ctk.CTkButton(self.btn_frame, text="▶ Chạy Watchdog", command=self.run_watchdog)
-        self.run_btn.pack(side="left", padx=10)
+        # Thêm label hiển thị đếm ngược
+        self.countdown_label = ctk.CTkLabel(
+            self.btn_frame,
+            text="⏱ Watchdog: 120s | Progress: 20s",
+            font=("Segoe UI", 12)
+        )
+        self.countdown_label.pack(side="left", padx=10)
 
         # Nút mở cửa sổ Watchdog Log
         self.watchdog_log_btn = ctk.CTkButton(
@@ -1299,6 +1250,7 @@ class BotManager(ctk.CTk):
                 hover_color="#2E7D32"
             )
             self.tray_icon.icon = self.paused_icon
+            self.countdown_label.configure(text="⏱ Đã tạm dừng kiểm tra")
         else:
             self.pause_btn.configure(
                 text="⏸ Tạm dừng kiểm tra",
@@ -1306,6 +1258,9 @@ class BotManager(ctk.CTk):
                 hover_color="#FB8C00"
             )
             self.tray_icon.icon = self.normal_icon
+            # Reset thời gian đếm ngược
+            self.next_watchdog_check = 120
+            self.next_progress_check = 20
             # Kích hoạt kiểm tra ngay lập tức
             self.refresh_all_logs()
         
@@ -1348,9 +1303,13 @@ class BotManager(ctk.CTk):
 
     def update_runtime_display(self):
         """Cập nhật hiển thị thời gian chạy"""
+        # Đọc runtime data mới nhất
+        runtime_data = self.load_runtime_data()
+        
         # Cập nhật hiển thị cho mỗi bot
         for widget in self.widgets:
             bot_name = widget["name"]
+            current_text = widget["resource_var"].get()
             
             # Lấy thông tin CPU/RAM từ process cache
             process_name = f"{bot_name.lower()}.exe"
@@ -1358,18 +1317,21 @@ class BotManager(ctk.CTk):
                 try:
                     proc = self.process_cache[process_name]
                     if proc.is_running():
+                        # Chỉ cập nhật nếu bot đang chạy
                         cpu = proc.cpu_percent()
                         mem = proc.memory_info().rss / (1024 * 1024)
-                        current_runtime = time.time() - proc.create_time()
-                        runtime_str = self.format_runtime(current_runtime)
+                        total_runtime = runtime_data.get(bot_name, 0)
+                        runtime_str = self.format_total_runtime(total_runtime)
                         widget["resource_var"].set(
                             f"CPU: {cpu:.1f}% | RAM: {mem:.1f}MB | Runtime: {runtime_str}"
                         )
-                    else:
+                    elif current_text != "Offline":
+                        # Chỉ set Offline nếu trạng thái hiện tại không phải Offline
                         widget["resource_var"].set("Offline")
                 except Exception:
-                    widget["resource_var"].set("Offline")
-            else:
+                    if current_text != "Offline":
+                        widget["resource_var"].set("Offline")
+            elif current_text != "Offline":
                 widget["resource_var"].set("Offline")
         
         # Lên lịch cập nhật tiếp theo
@@ -1380,13 +1342,44 @@ class BotManager(ctk.CTk):
 
     def quit_app(self):
         """Thoát ứng dụng"""
-        # Xóa icon khỏi system tray ngay lập tức
-        self.tray_icon.visible = False
-        self.tray_icon.stop()
-        
-        # Đóng executor và destroy window
-        self.executor.shutdown(wait=False)
-        self.quit()
+        try:
+            # Dừng tất cả các tiến trình PowerShell đang chạy
+            if sys.platform == "win32":
+                # Tìm và dừng các tiến trình PowerShell đang chạy script của chúng ta
+                processes = subprocess.run(
+                    ["powershell", "-Command", "Get-Process | Where-Object { $_.CommandLine -like '*watchdog.ps1*' -or $_.CommandLine -like '*watchdog_progress.ps1*' }"],
+                    capture_output=True,
+                    text=True
+                )
+                if processes.stdout:
+                    subprocess.run(
+                        ["powershell", "-Command", "Get-Process | Where-Object { $_.CommandLine -like '*watchdog.ps1*' -or $_.CommandLine -like '*watchdog_progress.ps1*' } | Stop-Process -Force"],
+                        capture_output=True
+                    )
+
+            # Đặt flag dừng
+            self.is_checking_paused = True
+            self.watchdog_running = False
+            self.progress_check_running = False
+
+            # Xóa icon khỏi system tray
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.visible = False
+                self.tray_icon.stop()
+
+            # Dừng executor và đợi các task hoàn thành
+            if hasattr(self, 'executor'):
+                self.executor.shutdown(wait=True)
+
+            # Ghi log
+            logging.info("Đã dừng tất cả các tiến trình và thoát ứng dụng")
+
+            # Thoát ứng dụng
+            self.quit()
+
+        except Exception as e:
+            logging.error(f"Lỗi khi thoát ứng dụng: {str(e)}")
+            self.quit()
 
     def auto_refresh_progress(self):
         """Tự động chạy watchdog_progress.ps1 để kiểm tra trạng thái"""
@@ -1414,28 +1407,16 @@ class BotManager(ctk.CTk):
                             stderr=subprocess.PIPE
                         )
                         
-                        try:
-                            # Tăng timeout lên 60 giây
-                            process.wait(timeout=60)
-                            
-                            # Chỉ cập nhật nội dung nếu cửa sổ log đang mở
-                            if self.progress_window and self.progress_window.winfo_exists():
-                                if os.path.exists(PROGRESS_LOG_FILE):
-                                    with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
-                                        log_content = f.read()
-                                    self.progress_window.update_log_content(log_content)
-                            
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            error_msg = "Kiểm tra progress đang chạy quá lâu (>1 phút). Có thể do hệ thống đang chậm. Thử lại sau."
-                            logging.error(error_msg)
-                            return
+                        # Đợi script hoàn thành
+                        process.wait()
                         
-                        if process.returncode != 0:
-                            stderr = process.stderr.read().decode('utf-8', errors='ignore')
-                            logging.error(f"Lỗi kiểm tra progress: {stderr}")
-                            return
-                            
+                        # Cập nhật nội dung nếu cửa sổ log đang mở
+                        if self.progress_window and self.progress_window.winfo_exists():
+                            if os.path.exists(PROGRESS_LOG_FILE):
+                                with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
+                                    log_content = f.read()
+                                self.progress_window.update_log_content(log_content)
+                                
                 except Exception as e:
                     logging.error(f"Lỗi kiểm tra progress: {str(e)}")
                 finally:
@@ -1517,17 +1498,65 @@ class BotManager(ctk.CTk):
         self.progress_window.log_text.insert("end", text + "\n", tag)
         self.progress_window.log_text.configure(state="disabled")
 
-    def auto_refresh_watchdog(self):
-        """Tự động chạy watchdog.ps1 định kỳ"""
+    def update_countdown(self):
+        """Cập nhật đếm ngược và kích hoạt check khi đến thời điểm"""
         if not self.is_checking_paused:
-            if self.watchdog_running:
-                logging.info("Watchdog đã đang chạy, bỏ qua lần này")
-                self.after(120000, self.auto_refresh_watchdog)  # 2 phút
-                return
-            self.run_watchdog()
-        
-        # Chạy lại sau 2 phút
-        self.after(120000, self.auto_refresh_watchdog)
+            self.next_watchdog_check -= 1
+            self.next_progress_check -= 1
+
+            # Cập nhật label đếm ngược
+            self.countdown_label.configure(
+                text=f"⏱ Watchdog: {self.next_watchdog_check}s | Progress: {self.next_progress_check}s"
+            )
+
+            # Kích hoạt check khi đến thời điểm
+            if self.next_watchdog_check <= 0:
+                if not self.watchdog_running:  # Kiểm tra xem watchdog có đang chạy không
+                    self.run_watchdog()  # Chạy watchdog.ps1
+                self.next_watchdog_check = 120  # Reset về 2 phút
+
+            if self.next_progress_check <= 0:
+                if not self.progress_check_running:  # Kiểm tra xem progress check có đang chạy không
+                    def run_progress():
+                        try:
+                            self.progress_check_running = True
+                            if os.path.exists(PROGRESS_LOG_FILE):
+                                os.remove(PROGRESS_LOG_FILE)
+                            
+                            # Chạy PowerShell script ẩn
+                            if sys.platform == "win32":
+                                with open(PROGRESS_PS_SCRIPT, 'r', encoding='utf-8') as f:
+                                    script_content = f.read()
+                                
+                                process = subprocess.Popen(
+                                    ["powershell.exe", "-WindowStyle", "Hidden", "-NoProfile", "-Command", script_content],
+                                    creationflags=subprocess.CREATE_NO_WINDOW,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE
+                                )
+                                
+                                # Đợi script hoàn thành
+                                process.wait()
+                                
+                                # Cập nhật nội dung nếu cửa sổ log đang mở
+                                if self.progress_window and self.progress_window.winfo_exists():
+                                    if os.path.exists(PROGRESS_LOG_FILE):
+                                        with open(PROGRESS_LOG_FILE, 'r', encoding='utf-8') as f:
+                                            log_content = f.read()
+                                        self.progress_window.update_log_content(log_content)
+                                
+                        except Exception as e:
+                            logging.error(f"Lỗi kiểm tra progress: {str(e)}")
+                        finally:
+                            self.progress_check_running = False
+                    
+                    # Chạy trong thread riêng
+                    self.executor.submit(run_progress)
+                
+                self.next_progress_check = 20  # Reset về 20 giây
+
+        # Lên lịch cập nhật tiếp theo sau 1 giây
+        self.after(1000, self.update_countdown)
 
 if __name__ == "__main__":
     app = BotManager()
